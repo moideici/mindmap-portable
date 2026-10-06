@@ -6,9 +6,9 @@ import shutil
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-target = ROOT / "build-final" / "test clé USB" / "cartes"
+target = ROOT / "build" / "test clé USB" / "cartes"
 target.mkdir(parents=True, exist_ok=True)
-shutil.copy2(ROOT / "build-final/MindMap.exe", target / "MindMap.exe")
+shutil.copy2(ROOT / "build/MindMap.exe", target / "MindMap.exe")
 result = subprocess.run([str(target / "MindMap.exe"), "--smoke-test"], cwd=ROOT / "tests", timeout=40)
 report = json.loads((target / "smoke-test-report.json").read_text(encoding="utf-8"))
 assert result.returncode == 0 and report["ok"], report
@@ -23,5 +23,5 @@ report.update({"exe_bytes": (target / "MindMap.exe").stat().st_size, "imports": 
     "relocated_unicode_path": True, "cwd_is_different": True, "bundled_dlls": 0,
     "exe_sha256": hashlib.sha256((target / "MindMap.exe").read_bytes()).hexdigest(),
     "physical_usb_tested": False})
-(ROOT / "build-final/portable-result.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+(ROOT / "build/portable-result.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
 print(json.dumps(report, indent=2))

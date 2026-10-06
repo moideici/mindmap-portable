@@ -8,7 +8,7 @@ import shutil
 ROOT = Path(__file__).resolve().parents[1]
 DELIVERY = ROOT / "delivery"
 DELIVERY.mkdir(exist_ok=True)
-shutil.copy2(ROOT / "build-final/MindMap.exe", DELIVERY / "MindMap.exe")
+shutil.copy2(ROOT / "build/MindMap.exe", DELIVERY / "MindMap.exe")
 for name in ("README.md", "RAPPORT_COMPLET.md"):
     shutil.copy2(ROOT / name, DELIVERY / name)
 shutil.copytree(ROOT, DELIVERY / "sources", dirs_exist_ok=True,
@@ -17,11 +17,11 @@ proof = DELIVERY / "sources/tests/preuves"
 proof.mkdir(parents=True, exist_ok=True)
 shutil.copy2(ROOT / "build/differential-result.json", proof / "differential-result.json")
 for name in ("converter-probes.json", "portable-result.json"):
-    shutil.copy2(ROOT / "build-final" / name, proof / name)
-portable = ROOT / "build-final/test clé USB/cartes"
+    shutil.copy2(ROOT / "build" / name, proof / name)
+portable = ROOT / "build/test clé USB/cartes"
 for name in ("test-interface.png", "test-carte.png", "test-carte.svg", "test-carte.mindmap", "test-plan.md", "smoke-test-report.json"):
     shutil.copy2(portable / name, proof / name)
-shutil.copy2(ROOT / "build-final/Testing/Temporary/LastTest.log", proof / "ctest.txt")
+shutil.copy2(ROOT / "build/Testing/Temporary/LastTest.log", proof / "ctest.txt")
 module = runpy.run_path(str(ROOT / "python/mindmap_core.py"))
 mind = module["MindMap"]("Organiser mes révisions")
 first = mind.add(1, "Comprendre le chapitre")

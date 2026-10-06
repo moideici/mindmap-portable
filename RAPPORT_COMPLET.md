@@ -1,5 +1,7 @@
 # MindMap portable — rapport d'implémentation, validation et retours pour py2x
 
+> **Version 2 (6 octobre 2026).** Ce rapport décrit la version 1. La version 2 ajoute, en C++ natif autour du cœur généré resté intact : historique compressé, dispositions équilibrée et radiale, idées de taille variable avec aperçu des notes, liens transversaux, repères, mode révision, import de plans, navigation clavier, mini-carte et thème sombre. Le format de fichier passe en `version 2` et lit toujours la version 1. Voir le README et `sources/src/{geometry,exports,history}.hpp`.
+
 Date : **4 octobre 2026**. Ce document est destiné à l'utilisateur et aux futures conversations qui travailleront sur le convertisseur ou l'application.
 
 ## 1. Résultat livré et consignes respectées
