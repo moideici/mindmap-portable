@@ -1,0 +1,19 @@
+Start testing: Oct 04 11:37 Paris, Madrid (heure d’été)
+----------------------------------------------------------
+1/1 Testing: core_and_documents
+1/1 Test: core_and_documents
+Command: "C:/Users/gabor/code/ia/projects/mindmap_portable/build-final/core_tests.exe"
+Directory: C:/Users/gabor/code/ia/projects/mindmap_portable/build-final
+"core_and_documents" start time: Oct 04 11:37 Paris, Madrid (heure d’été)
+Output:
+----------------------------------------------------------
+core, documents, malformed inputs and 100 memory cycles: PASS
+<end of output>
+Test time =   0.12 sec
+----------------------------------------------------------
+Test Passed.
+"core_and_documents" end time: Oct 04 11:37 Paris, Madrid (heure d’été)
+"core_and_documents" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Oct 04 11:37 Paris, Madrid (heure d’été)

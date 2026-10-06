@@ -1,0 +1,10 @@
+# Binaires : l'exécutable est publié dans les Releases GitHub
+MindMap.exe
+sources/build*/
+sources/delivery/
+__pycache__/
+*.pyc
+*.tmp
+# Session personnelle, recréée automatiquement
+session.mindmap
+session-invalide-*.mindmap

@@ -1,0 +1,36 @@
+{
+  "source_sha256": "249c4b6e9b73384fabd37dd9ed44897aa8657fd73dc1e496b5523123c9b6275d",
+  "generated_sha256": "c0184502919329e9514f6bf2e93c9ef43d11a89305208d2952ce884bd957c6d4",
+  "converter_sha256": {
+    "__init__.py": "9f791b34210f67b4c6f6df1515ec938ad6b2cea5f9afc5860b61ea4d61650c09",
+    "__main__.py": "959917c6b9ea3a02689fca955e932d20e016d4861ea2dd866acc612e9e4c9a8d",
+    "builtins_fe.py": "9c9c06be696ed9446673fdd6c3022d1052078c850fe2f00ef117457cd4aee9fa",
+    "classes_fe.py": "7da62dc5ed5bc79090263a2d92585e3a145f2d3c2575c24d639c7cf582d40b7d",
+    "coll_fe.py": "3645e4f99ec9aeabc2b2bb20364c63f86020c99dbba07b86e7866de43b4179cf",
+    "emit_cpp.py": "823e064d9400b27159b469d188f61929ffbc2af455d056db61c5cfa371550d23",
+    "emit_kotlin.py": "34d9e16acd8610aec8744c42b8f89dca4a56741d3294669f3981fc32bc2e32a7",
+    "enum_fe.py": "e27bffcbb1f28a6397433d142093f503753d1099c22cb6044240d683f708fd05",
+    "errors.py": "49b473f2e1c6a26c279b905b177886c9d641b07ecec5108dbe9c5c9f07268667",
+    "excs.py": "466441eed4f4bf9d0e322d35109520520fb5cc74a8f6f79d3d0ab2b6d97c192c",
+    "frontend.py": "f69088e5c8ee3bf98828ceebd2608ea2cc97c3b1309df1eebb8f94f99d4d51ed",
+    "ir.py": "d026f9cfa95d41577736f9fd398e1aa7cd22992b2f27ff6ccb8e6137e8c9a6c2",
+    "lib.py": "7b1103416b50d50740dd6ba880c458618f9af5428d5227f7bc0f6064982d15ba",
+    "names.py": "3af78a11ce34a3f96d9a774472e89164b7ace20609fdf9c43afdb3bef1228e48",
+    "random_prelude.py": "3162be01648afe0b45b97a156fe48e9655682aacf22ce9b9494d6e08e5d2d153",
+    "runtime_cpp.py": "2c05d373b9fd19f0307f3ee6b8f67288eb7e7c7ed9d36e25d290fbba5f6982ce",
+    "runtime_cpp_coll.py": "4f4e5fa88b88b1acc8c788f358a4801ca62991a4ed6d4aa01d3e4af3eb09a286",
+    "runtime_cpp_exc.py": "abc9273e41acb7d999f238f5fb7f88efcbb74794e549e2e360343df870d50906",
+    "runtime_cpp_fmt.py": "6913aa31ec1b9edb3d6947601b998cc9a07ab51350a0ae2d8d10936568866f7b",
+    "runtime_cpp_str.py": "904a5ec1fc83239e86e405c7f5b0af62e19beedb6802711fbcb72994c5a4cf9f",
+    "runtime_kt_coll.py": "1fa05c316271d314bb3f3586fb5f3ae4e0db4f298d9b319719baab0f7609e0d2",
+    "runtime_kt_exc.py": "3af2919ae9d9462490af3640a75418e245d816585cc84d67698e2370281bbfc6",
+    "runtime_kt_str.py": "7103a98dd7def2b1296f944cb7acc6e1806d981e23efdff926710371979d9e36",
+    "std_fe.py": "c1f58e488720c26048bb19841f155058a14df58729df95f51d262a6f4910bd90",
+    "types.py": "8a7fec9d463721b16c115dc5a5c1d0fba51a43907bdc4cba4ee3d9c006658ccc",
+    "verify.py": "bc238c785d765b45a0d43e2eb065247a2ef710475cac0e9ff0c867c2c9ba4f66"
+  },
+  "flags": {
+    "target": "cpp",
+    "strict": true
+  }
+}

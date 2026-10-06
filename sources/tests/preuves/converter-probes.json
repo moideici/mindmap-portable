@@ -1,0 +1,57 @@
+{
+  "json": {
+    "accepted": false,
+    "error": "ligne 1 : module json non supporté (supportés : math, string, sys)",
+    "source": "import json\ndef decode(s: str) -> str:\n    return json.loads(s)[\"title\"]\n"
+  },
+  "files": {
+    "accepted": false,
+    "error": "ligne 2 : instruction non supportée : With",
+    "source": "def save(s: str) -> None:\n    with open(\"map.json\", \"w\", encoding=\"utf-8\") as f:\n        f.write(s)\n"
+  },
+  "pathlib": {
+    "accepted": false,
+    "error": "ligne 1 : module pathlib non supporté (supportés : bisect, collections, functools, heapq, itertools, math, random, string, sys)",
+    "source": "from pathlib import Path\ndef location() -> str:\n    return str(Path(__file__).parent)\n"
+  },
+  "tkinter": {
+    "accepted": false,
+    "error": "ligne 1 : module tkinter non supporté (supportés : math, string, sys)",
+    "source": "import tkinter as tk\ndef ui() -> None:\n    root = tk.Tk()\n    root.mainloop()\n"
+  },
+  "deepcopy": {
+    "accepted": false,
+    "error": "ligne 1 : module copy non supporté (supportés : math, string, sys)",
+    "source": "import copy\ndef clone(xs: list[int]) -> list[int]:\n    return copy.deepcopy(xs)\n"
+  },
+  "weakref": {
+    "accepted": false,
+    "error": "ligne 1 : module weakref non supporté (supportés : math, string, sys)",
+    "source": "import weakref\nclass Node:\n    def __init__(self) -> None:\n        self.n = 1\ndef observe(n: Node) -> bool:\n    return weakref.ref(n)() is not None\n"
+  },
+  "unicode_len": {
+    "accepted": true,
+    "source": "def main() -> None:\n    print(len(\"é🗺\"))\nif __name__ == \"__main__\":\n    main()\n",
+    "cpp_output": "6\n",
+    "python_output": "2\n",
+    "equal": false
+  },
+  "unicode_lower": {
+    "accepted": true,
+    "source": "def main() -> None:\n    print(\"ÉCOLE\".lower())\nif __name__ == \"__main__\":\n    main()\n",
+    "cpp_output": "École\n",
+    "python_output": "école\n",
+    "equal": false
+  },
+  "library_entry": {
+    "accepted": true,
+    "source": "def twice(n: int) -> int:\n    return n * 2\n",
+    "generates_main": false
+  },
+  "cycles": {
+    "accepted": true,
+    "source": "from typing import Optional\nclass Link:\n    def __init__(self) -> None:\n        self.other: Optional[Link] = None\n    def connect(self, other: \"Link\") -> None:\n        self.other = other\n",
+    "cpp_output": "retained-cycle\nreleased-after-breaking\n"
+  },
+  "converter_unmodified": true
+}

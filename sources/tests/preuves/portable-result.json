@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "nodes": 11,
+  "gdi_before": 27,
+  "gdi_after": 27,
+  "exe_bytes": 1605632,
+  "imports": [
+    "COMCTL32.dll",
+    "comdlg32.dll",
+    "GDI32.dll",
+    "gdiplus.dll",
+    "KERNEL32.dll",
+    "api-ms-win-crt-convert-l1-1-0.dll",
+    "api-ms-win-crt-environment-l1-1-0.dll",
+    "api-ms-win-crt-filesystem-l1-1-0.dll",
+    "api-ms-win-crt-heap-l1-1-0.dll",
+    "api-ms-win-crt-locale-l1-1-0.dll",
+    "api-ms-win-crt-math-l1-1-0.dll",
+    "api-ms-win-crt-private-l1-1-0.dll",
+    "api-ms-win-crt-runtime-l1-1-0.dll",
+    "api-ms-win-crt-stdio-l1-1-0.dll",
+    "api-ms-win-crt-string-l1-1-0.dll",
+    "api-ms-win-crt-time-l1-1-0.dll",
+    "api-ms-win-crt-utility-l1-1-0.dll",
+    "SHELL32.dll",
+    "USER32.dll"
+  ],
+  "relocated_unicode_path": true,
+  "cwd_is_different": true,
+  "bundled_dlls": 0,
+  "exe_sha256": "9e650ce3bc71b6c9e4681a88a0ffcdd968ba04f001ced49e30947d1ecee8edbe",
+  "physical_usb_tested": false
+}
