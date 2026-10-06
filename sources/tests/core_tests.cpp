@@ -1,4 +1,5 @@
-#include "../src/documents.hpp"
+#include "../src/exports.hpp"
+#include "../src/history.hpp"
 #include <cstdio>
 
 static int failures=0;
@@ -67,6 +68,96 @@ int main(){
         }
         CHECK(map_weak.expired());CHECK(node_weak.expired());
     }
-    std::printf("core, documents, malformed inputs and 100 memory cycles: %s\n",failures?"FAIL":"PASS");
+    // --- Format v2 : liens, repères, préférences d'affichage ---
+    {
+        document::State v1=document::decode("{\"format\":\"mindmap-portable\",\"version\":1,\"next_id\":3,\"selected\":2,\"view\":{\"zoom\":1,\"x\":0,\"y\":0},"
+            "\"nodes\":[{\"id\":1,\"parent\":-1,\"title\":\"Sujet\",\"note\":\"\",\"x\":0,\"y\":0,\"color\":6452456,\"collapsed\":false},"
+            "{\"id\":2,\"parent\":1,\"title\":\"A\",\"note\":\"\",\"x\":260,\"y\":0,\"color\":6452456,\"collapsed\":false}]}");
+        CHECK(v1.layout==document::LayoutRight && v1.links.empty() && v1.markers.empty());
+        CHECK(document::encode(v1).find("\"version\":2")!=std::string::npos);
+    }
+    {
+        document::State m;m.map=std::make_shared<MindMap>("Guerre froide");
+        auto a=m.map->add(1,"Causes"),b=m.map->add(1,"Conséquences"),c=m.map->add(a,"Rivalité idéologique"),d=m.map->add(b,"Course aux armements");
+        CHECK(document::add_link(m,c,d,"cause de"));
+        CHECK(!document::add_link(m,d,c));
+        rejects([&]{document::add_link(m,c,c);});
+        m.markers[c]=1;m.markers[d]=3;m.show_notes=true;m.dark=true;m.layout=document::LayoutRadial;
+        auto text=document::encode(m);auto back=document::decode(text);
+        CHECK(back.links==m.links && back.markers==m.markers && back.layout==document::LayoutRadial && back.dark && back.show_notes);
+        CHECK(document::encode(back)==text);
+        auto bad=text;auto target="\"to\":"+std::to_string(d);bad.replace(bad.find(target),target.size(),"\"to\":999");rejects([&]{document::decode(bad);});
+        auto copy=document::duplicate_branch(m,a);
+        CHECK(document::marker_of(m,m.map->nodes.at(copy)->children[0])==1);
+        m.map->remove(b);document::prune(m);
+        CHECK(m.links.empty() && !m.markers.count(d));
+        auto e=m.map->add(copy,"Plan Marshall");document::add_link(m,c,e,"");
+        auto copy2=document::duplicate_branch(m,copy);
+        CHECK(m.links.size()==1);  // the link leaves the branch: it is not copied
+        document::add_link(m,m.map->nodes.at(copy2)->children[0],m.map->nodes.at(copy2)->children[1]);
+        document::duplicate_branch(m,copy2);CHECK(m.links.size()==3);
+    }
+    // --- Dispositions : aucune idée ne se chevauche, branches des deux côtés ---
+    for(int mode:{document::LayoutRight,document::LayoutBalanced,document::LayoutRadial})for(bool notes:{false,true}){
+        document::State m;m.layout=mode;m.show_notes=notes;
+        for(int i=0;i<7;++i){auto k=m.map->add(1,"Branche principale numéro "+std::to_string(i));
+            for(int j=0;j<i%4+1;++j){auto g=m.map->add(k,"Sous-idée "+std::to_string(j));m.map->rename(g,"Sous-idée "+std::to_string(j),"Une note assez longue pour occuper plusieurs lignes dans l'aperçu.");
+                if(j==1)m.map->add(g,"Détail");}}
+        document::layout(m);
+        auto ids=m.map->visible();bool overlap=false;int left=0,right=0;
+        for(size_t i=0;i<ids.size();++i){auto bi=document::box(m,ids[i]);left+=bi.x<-1;right+=bi.x>1;
+            for(size_t j=i+1;j<ids.size();++j)if(bi.overlaps(document::box(m,ids[j]))){overlap=true;std::printf("overlap mode %d: %lld %lld\n",mode,ids[i],ids[j]);}}
+        CHECK(!overlap);
+        CHECK(mode==document::LayoutRight?left==0:(left>3&&right>3));
+    }
+    {
+        document::Box a{0,0,100,50},b{300,200,100,50};
+        auto c=document::link_curve(a,b);
+        CHECK(c.distance(c.at(.5))<1);CHECK(c.distance({1000,1000})>500);
+        CHECK(!a.contains(c.a.x,c.a.y)&&!b.contains(c.d.x,c.d.y));
+        auto right=document::connector(a,b);CHECK(right.a.x==a.right()&&right.d.x==b.left());
+        auto left=document::connector(b,a);CHECK(left.a.x==b.left()&&left.d.x==a.right());
+        auto lines=document::wrap("Une idée assez longue pour être coupée proprement",16,2);
+        CHECK(lines.size()==2 && lines[1].find("…")!=std::string::npos);
+    }
+    // --- Plans : Markdown exporté puis réimporté, texte indenté ---
+    {
+        document::State m;m.map=std::make_shared<MindMap>("Révolution française");m.map->rename(1,"Révolution française","Note du sujet");
+        auto a=m.map->add(1,"1789");m.map->rename(a,"1789","Prise de la Bastille\nÉtats généraux");m.markers[a]=5;
+        auto b=m.map->add(a,"Abolition des privilèges");m.markers[b]=3;m.map->add(1,"Terreur");document::add_link(m,b,a,"conséquence");
+        auto md=document::markdown(m);
+        CHECK(md.find("## Liens transversaux")!=std::string::npos);
+        auto back=document::from_outline(document::parse_outline(md),"x");
+        CHECK(back.map->nodes.size()==4 && back.map->nodes.at(1)->title=="Révolution française" && back.map->nodes.at(1)->note=="Note du sujet");
+        bool found=false;for(const auto& kv:back.map->nodes){auto n=kv.second;if(n->title=="1789")found=n->note=="Prise de la Bastille\nÉtats généraux"&&document::marker_of(back,n->id)==5;}
+        CHECK(found);
+        auto plain=document::parse_outline("Chapitre\n\tPartie A\n\t\tExemple\n\tPartie B\nAutre\n");
+        CHECK(plain.size()==5 && plain[2].level==2 && plain[3].level==1 && plain[4].level==0);
+        auto list=document::parse_outline("1. Un\n   - [x] deux\n      * trois\n");
+        CHECK(list.size()==3 && list[1].marker==2 && list[2].level==2 && list[1].title=="deux");
+        auto created=document::apply_outline(m,a,plain);
+        CHECK(created.size()==5 && m.map->nodes.at(created[4])->parent==a);
+        rejects([&]{document::parse_outline(std::string("\xff",1));});
+        rejects([&]{document::apply_outline(m,1,{});});
+        CHECK(document::branch_markdown(m,b).rfind("- [?] Abolition",0)==0);
+        CHECK(document::svg(m).find("marker-end")!=std::string::npos);
+    }
+    // --- Historique compressé ---
+    {
+        History history;document::State big;
+        for(int i=0;i<300;++i)big.map->add(1+(i/10),"Idée de révision numéro "+std::to_string(i));
+        std::string first=document::encode(big);
+        for(int i=0;i<60;++i){history.remember(document::encode(big));big.map->rename(2,"Titre "+std::to_string(i),"");}
+        CHECK(history.steps()==60);
+        if(history.compressed())CHECK(history.bytes()*4<history.raw_bytes());
+        std::printf("history: %zu steps, %zu bytes stored for %zu raw bytes\n",history.steps(),history.bytes(),history.raw_bytes());
+        std::string current=document::encode(big);
+        for(int i=0;i<60;++i)current=history.undo(current);
+        CHECK(current==first && !history.can_undo() && history.can_redo());
+        current=history.redo(current);CHECK(history.steps()==1);
+        history.remember(first);CHECK(history.steps()==1);  // identical snapshots are not stored twice
+        history.max_steps=10;for(int i=0;i<30;++i)history.remember(std::to_string(i));CHECK(history.steps()==10&&!history.can_redo());
+    }
+    std::printf("core, documents, links, layouts, outlines, history, malformed inputs and 100 memory cycles: %s\n",failures?"FAIL":"PASS");
     return failures?1:0;
 }

@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <set>
 #include <cctype>
+#include <charconv>
 
 namespace document {
 constexpr size_t max_file_bytes = 8 * 1024 * 1024;
@@ -190,16 +191,52 @@ public:
         return result;
     }
 };
+// Layouts: tree growing to the right (v1 behaviour), branches balanced on both sides, or 360° rings.
+enum Layout { LayoutRight = 0, LayoutBalanced = 1, LayoutRadial = 2 };
+// Markers: none, important, learnt, to review, warning, key landmark (date/place).
+constexpr int marker_count = 6;
+constexpr size_t max_links = 1000, max_link_label = 200;
+struct Link {
+    long long from = 0, to = 0;
+    std::string label;
+    bool operator==(const Link&) const = default;
+};
 struct State {
     std::shared_ptr<MindMap> map = std::make_shared<MindMap>("Mon sujet");
     long long selected = 1;
     double zoom = 1, pan_x = 260, pan_y = 340;
+    int layout = LayoutBalanced;
+    bool show_notes = false, dark = false, minimap = true;
+    // Native extensions stored next to the generated tree, keyed by node id.
+    std::vector<Link> links;
+    std::map<long long, int> markers;
 };
+inline int marker_of(const State& state, long long id) {
+    auto it = state.markers.find(id);
+    return it == state.markers.end() ? 0 : it->second;
+}
+// Drops links and markers whose ideas no longer exist (after removal, undo, import...).
+inline void prune(State& state) {
+    auto& nodes = state.map->nodes;
+    std::erase_if(state.links, [&](const Link& l) { return !nodes.count(l.from) || !nodes.count(l.to) || l.from == l.to; });
+    std::erase_if(state.markers, [&](const auto& m) { return !nodes.count(m.first) || m.second <= 0 || m.second >= marker_count; });
+}
+inline bool add_link(State& state, long long from, long long to, const std::string& label = "") {
+    if (from == to) throw std::runtime_error("Une idée ne peut pas être reliée à elle-même");
+    if (!state.map->nodes.count(from) || !state.map->nodes.count(to)) throw std::runtime_error("Idée absente");
+    for (const auto& l : state.links)
+        if ((l.from == from && l.to == to) || (l.from == to && l.to == from)) return false;
+    if (state.links.size() >= max_links) throw std::runtime_error("Limite de 1 000 liens atteinte");
+    state.links.push_back({from, to, label.substr(0, max_link_label)});
+    return true;
+}
 inline std::string encode(const State& state) {
     std::ostringstream out;
     out.imbue(std::locale::classic());
-    out << std::setprecision(17) << "{\"format\":\"mindmap-portable\",\"version\":1,\"next_id\":" << state.map->next_id
-        << ",\"selected\":" << state.selected << ",\"view\":{\"zoom\":" << state.zoom << ",\"x\":" << state.pan_x << ",\"y\":" << state.pan_y << "},\"nodes\":[";
+    out << std::setprecision(17) << "{\"format\":\"mindmap-portable\",\"version\":2,\"next_id\":" << state.map->next_id
+        << ",\"selected\":" << state.selected << ",\"view\":{\"zoom\":" << state.zoom << ",\"x\":" << state.pan_x << ",\"y\":" << state.pan_y
+        << ",\"layout\":" << state.layout << ",\"notes\":" << (state.show_notes ? "true" : "false")
+        << ",\"dark\":" << (state.dark ? "true" : "false") << ",\"minimap\":" << (state.minimap ? "true" : "false") << "},\"nodes\":[";
     bool first = true;
     // Depth-first order preserves sibling order, including after reparenting.
     for (long long id : state.map->descendants(1)) {
@@ -208,7 +245,16 @@ inline std::string encode(const State& state) {
         first = false;
         out << "{\"id\":" << n->id << ",\"parent\":" << n->parent << ",\"title\":" << quote(n->title)
             << ",\"note\":" << quote(n->note) << ",\"x\":" << n->x << ",\"y\":" << n->y
-            << ",\"color\":" << n->color << ",\"collapsed\":" << (n->collapsed ? "true" : "false") << '}';
+            << ",\"color\":" << n->color << ",\"collapsed\":" << (n->collapsed ? "true" : "false");
+        if (int marker = marker_of(state, id)) out << ",\"marker\":" << marker;
+        out << '}';
+    }
+    out << "],\"links\":[";
+    first = true;
+    for (const auto& l : state.links) {
+        if (!first) out << ',';
+        first = false;
+        out << "{\"from\":" << l.from << ",\"to\":" << l.to << ",\"label\":" << quote(l.label) << '}';
     }
     auto encoded=out.str() + "]}\n";
     if(encoded.size()>max_file_bytes)throw std::runtime_error("Carte trop volumineuse (8 Mio maximum) : raccourcissez les notes");
@@ -216,9 +262,16 @@ inline std::string encode(const State& state) {
 }
 inline State decode(const std::string& input) {
     Json j = Parser(input).parse();
-    if (j.at("format").text() != "mindmap-portable" || j.at("version").integer(1, 1) != 1)
+    if (j.at("format").text() != "mindmap-portable")
         throw std::runtime_error("Format ou version non pris en charge");
+    // Version 1 files (before links, markers and layouts) still open unchanged.
+    const auto version = j.at("version").integer(1, 2);
+    auto optional = [](const Json& owner, const char* name) -> const Json* {
+        auto it = owner.object.find(name);
+        return owner.kind == Json::Object && it != owner.object.end() ? &it->second : nullptr;
+    };
     State result;
+    if (version == 1) result.layout = LayoutRight;
     result.map->nodes.clear();
     const auto& nodes = j.at("nodes");
     if (nodes.kind != Json::Array || nodes.array.empty() || nodes.array.size() > 2000) throw std::runtime_error("Nombre d'idees invalide");
@@ -232,6 +285,10 @@ inline State decode(const std::string& input) {
         auto n = std::make_shared<MapNode>(id, item.at("parent").integer(-1, 2147483646), title, note,
             item.at("x").num(), item.at("y").num(), item.at("color").integer(0, 0xFFFFFF), item.at("collapsed").flag(), PyList<long long>());
         if (std::abs(n->x) > 1000000 || std::abs(n->y) > 1000000) throw std::runtime_error("Position hors limites");
+        if (auto marker = optional(item, "marker")) {
+            auto value = marker->integer(0, marker_count - 1);
+            if (value) result.markers[id] = static_cast<int>(value);
+        }
         result.map->nodes[id] = n;
         max_id = std::max(max_id, id);
     }
@@ -257,6 +314,18 @@ inline State decode(const std::string& input) {
     result.zoom = view.at("zoom").num(); result.pan_x = view.at("x").num(); result.pan_y = view.at("y").num();
     if (result.zoom < .2 || result.zoom > 3 || std::abs(result.pan_x) > 10000000 || std::abs(result.pan_y) > 10000000)
         throw std::runtime_error("Vue hors limites");
+    if (auto layout = optional(view, "layout")) result.layout = static_cast<int>(layout->integer(0, 2));
+    if (auto notes = optional(view, "notes")) result.show_notes = notes->flag();
+    if (auto dark = optional(view, "dark")) result.dark = dark->flag();
+    if (auto minimap = optional(view, "minimap")) result.minimap = minimap->flag();
+    if (auto links = optional(j, "links")) {
+        if (links->kind != Json::Array || links->array.size() > max_links) throw std::runtime_error("Liens invalides");
+        for (const auto& item : links->array) {
+            Link l{item.at("from").integer(1, 2147483646), item.at("to").integer(1, 2147483646), item.at("label").text()};
+            if (l.label.size() > max_link_label || l.label.find('\0') != std::string::npos) throw std::runtime_error("Libellé de lien hors limites");
+            if (!add_link(result, l.from, l.to, l.label)) throw std::runtime_error("Lien duplique");
+        }
+    }
     return result;
 }
 inline std::string xml(const std::string& s) {
@@ -267,70 +336,5 @@ inline std::string xml(const std::string& s) {
             default: if (static_cast<unsigned char>(c) >= 32 || c == '\n' || c == '\t') result += c; }
     }
     return result;
-}
-struct Bounds { double left=0, top=0, right=0, bottom=0; };
-inline Bounds bounds(const State& state) {
-    Bounds b{1e9, 1e9, -1e9, -1e9};
-    for (auto id : state.map->visible()) {
-        auto n = state.map->nodes.at(id);
-        b.left = std::min(b.left, n->x - 110); b.right = std::max(b.right, n->x + 110);
-        b.top = std::min(b.top, n->y - 40); b.bottom = std::max(b.bottom, n->y + 40);
-    }
-    return b;
-}
-inline std::string svg(const State& state) {
-    auto b = bounds(state);
-    std::ostringstream out;
-    out.imbue(std::locale::classic());
-    out << "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"" << b.left-30 << ' ' << b.top-30 << ' '
-        << b.right-b.left+60 << ' ' << b.bottom-b.top+60 << "\">\n<rect x=\"" << b.left-30 << "\" y=\"" << b.top-30
-        << "\" width=\"100%\" height=\"100%\" fill=\"#f5f7fc\"/>\n";
-    for (auto id : state.map->visible()) {
-        auto n = state.map->nodes.at(id);
-        if (n->parent == -1) continue;
-        auto p = state.map->nodes.at(n->parent);
-        out << "<path d=\"M " << p->x+100 << ' ' << p->y << " C " << p->x+180 << ' ' << p->y << ' ' << n->x-180 << ' ' << n->y
-            << ' ' << n->x-100 << ' ' << n->y << "\" stroke=\"#a5afd0\" stroke-width=\"2\" fill=\"none\"/>\n";
-    }
-    for (auto id : state.map->visible()) {
-        auto n = state.map->nodes.at(id);
-        std::ostringstream color; color << '#' << std::hex << std::setfill('0') << std::setw(6) << n->color;
-        out << "<g><title>" << xml(n->title + "\n" + n->note) << "</title><rect x=\"" << n->x-100 << "\" y=\"" << n->y-34
-            << "\" width=\"200\" height=\"68\" rx=\"14\" fill=\"white\" stroke=\"" << color.str() << "\" stroke-width=\"2\"/>"
-            << "<clipPath id=\"clip" << id << "\"><rect x=\"" << n->x-90 << "\" y=\"" << n->y-30 << "\" width=\"180\" height=\"60\"/></clipPath>";
-        std::vector<std::string> lines;std::string line;size_t count=0;
-        for(size_t pos=0;pos<n->title.size();){
-            unsigned char c=static_cast<unsigned char>(n->title[pos]);
-            size_t bytes=c<128?1:c<224?2:c<240?3:4;
-            if(count>=23 || c=='\n' || c=='\r'){
-                lines.push_back(line);line.clear();count=0;
-                if(lines.size()>=3){lines.back()+="…";break;}
-                if(c=='\n'||c=='\r'){++pos;continue;}
-            }
-            line+=n->title.substr(pos,bytes);pos+=bytes;++count;
-        }
-        if(lines.size()<3&&!line.empty())lines.push_back(line);
-        out << "<text text-anchor=\"middle\" font-family=\"Segoe UI, sans-serif\" font-size=\"13\" fill=\"#253047\" clip-path=\"url(#clip" << id << ")\">";
-        for(size_t i=0;i<lines.size();++i)out << "<tspan x=\"" << n->x << "\" y=\"" << n->y+5-static_cast<double>(lines.size()-1)*8+static_cast<double>(i)*16 << "\">" << xml(lines[i]) << "</tspan>";
-        out << "</text></g>\n";
-    }
-    return out.str() + "</svg>\n";
-}
-inline std::string markdown(const State& state) {
-    std::string out = "# " + state.map->nodes.at(1)->title + "\n\n";
-    if (!state.map->nodes.at(1)->note.empty()) out += state.map->nodes.at(1)->note + "\n\n";
-    for (auto id : state.map->descendants(1)) {
-        if (id == 1) continue;
-        auto n = state.map->nodes.at(id);
-        size_t depth = static_cast<size_t>(state.map->depth(id));
-        std::string title = n->title;
-        std::replace(title.begin(), title.end(), '\n', ' '); std::replace(title.begin(), title.end(), '\r', ' ');
-        out += std::string((depth-1)*2, ' ') + "- " + title + "\n";
-        if (!n->note.empty()) {
-            std::istringstream lines(n->note); std::string line;
-            while (std::getline(lines, line)) out += std::string(depth*2, ' ') + "> " + line + "\n";
-        }
-    }
-    return out;
 }
 } // namespace document
