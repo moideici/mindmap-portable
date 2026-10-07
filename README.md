@@ -113,3 +113,21 @@ ctest --test-dir sources/build --output-on-failure
 `sources/build/MindMap.exe --smoke-test` exerce l'interface de bout en bout (édition, liens, repères, dispositions, révision, exports) et écrit un rapport et des captures dans `sources/build/`. MSVC ne convient pas : le C++ généré utilise des extensions GCC.
 
 L'historique détaillé de la version 1 et les retours sur py2x sont dans **RAPPORT_COMPLET.md**.
+
+### Tests sur Linux
+
+Le modèle, le format de document, les dispositions et les exports se testent
+avec GCC sans Windows. Avec CMake, les commandes ci-dessus ne construisent que
+`core_tests` sur Linux. Sans CMake :
+
+```bash
+mkdir -p sources/build
+g++ -std=c++20 -O2 -Wall -Wextra sources/tests/core_tests.cpp -o sources/build/core_tests
+sources/build/core_tests
+python3 sources/tests/wrap_performance.py
+```
+
+Le dernier script compare le découpage UTF-8 avec le commit de référence v2
+(`98b56d2`, qui doit être présent dans le dépôt Git), puis mesure les notes
+courtes et longues. L'interface et l'historique compressé restent à vérifier
+sous Windows avec MinGW et `--smoke-test`.

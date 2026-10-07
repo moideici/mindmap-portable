@@ -309,13 +309,16 @@ public:
     PointF project(double x,double y) const { return {canvas.X+static_cast<REAL>(state.pan_x+x*state.zoom),canvas.Y+static_cast<REAL>(state.pan_y+y*state.zoom)}; }
     document::Point unproject(PointF p) const { return {(p.X-canvas.X-state.pan_x)/state.zoom,(p.Y-canvas.Y-state.pan_y)/state.zoom}; }
     // Where the +/− bubble sits: on the side where the children grow.
-    static document::Point toggle_anchor(const document::State& doc,long long id){
-        auto b=document::box(doc,id);auto n=doc.map->nodes.at(id);
+    static document::Point toggle_anchor(const document::State& doc,long long id,const document::Box& b){
+        auto n=doc.map->nodes.at(id);
         if(id==1||n->children.empty())return {b.x,b.bottom()};
         auto first=doc.map->nodes.at(n->children[0]);
         if(first->x>b.right())return {b.right(),b.y};
         if(first->x<b.left())return {b.left(),b.y};
         return first->y>=b.y?document::Point{b.x,b.bottom()}:document::Point{b.x,b.top()};
+    }
+    static document::Point toggle_anchor(const document::State& doc,long long id){
+        return toggle_anchor(doc,id,document::box(doc,id));
     }
     long long hit(PointF p) const {
         auto visible=state.map->visible();auto at=unproject(p);
@@ -422,8 +425,13 @@ public:
         // Grid-fitted text grows wider at small zooms; plain anti-aliasing scales linearly with the boxes.
         const auto hint=g.GetTextRenderingHint();g.SetTextRenderingHint(TextRenderingHintAntiAlias);
         auto visible=doc.map->visible();
-        std::unordered_map<long long,document::Box> boxes;
-        for(auto id:visible)boxes.emplace(id,document::box(doc,id));
+        struct NodeGeometry { document::Box box; document::Metrics metrics; };
+        std::unordered_map<long long,NodeGeometry> boxes;
+        boxes.reserve(visible.size());
+        for(auto id:visible){
+            auto n=doc.map->nodes.at(id);auto m=document::metrics(doc,id);
+            boxes.emplace(id,NodeGeometry{{n->x,n->y,m.w,m.h},m});
+        }
         auto at=[&](document::Point p){return PointF(area.X+static_cast<REAL>(panx+p.x*zoom),area.Y+static_cast<REAL>(pany+p.y*zoom));};
         auto outside=[&](const document::Curve& c){
             auto a=at(c.a),b=at(c.b),k=at(c.c),d=at(c.d);
@@ -432,7 +440,7 @@ public:
         for(auto id:visible){
             auto n=doc.map->nodes.at(id);
             if(n->parent==-1)continue;
-            auto c=document::connector(boxes.at(n->parent),boxes.at(id));
+            auto c=document::connector(boxes.at(n->parent).box,boxes.at(id).box);
             if(outside(c))continue;
             Pen line(rgb(n->color,doc.dark&&interactive?170:140),std::max(1.0f,2.2f*z));
             g.DrawBezier(&line,at(c.a),at(c.b),at(c.c),at(c.d));
@@ -443,7 +451,7 @@ public:
             const auto& l=doc.links[i];
             auto a=document::visible_anchor(doc,l.from),b=document::visible_anchor(doc,l.to);
             if(a==b||!boxes.count(a)||!boxes.count(b))continue;
-            auto c=document::link_curve(boxes.at(a),boxes.at(b));
+            auto c=document::link_curve(boxes.at(a).box,boxes.at(b).box);
             const bool chosen=interactive&&static_cast<int>(i)==selected_link, hover=interactive&&static_cast<int>(i)==hovered_link;
             if(!outside(c)){
                 Pen pen(chosen?t.selection:Color(hover?255:210,t.link.GetR(),t.link.GetG(),t.link.GetB()),std::max(1.2f,(chosen?3.4f:hover?2.8f:2.0f)*z));
@@ -454,7 +462,7 @@ public:
             if(!l.label.empty())labels.emplace_back(at(c.at(.5)),i);
         }
         for(auto id:visible){
-            auto n=doc.map->nodes.at(id);const auto& b=boxes.at(id);
+            auto n=doc.map->nodes.at(id);const auto& b=boxes.at(id).box;
             auto corner=at({b.left(),b.top()});
             RectF r(corner.X,corner.Y,static_cast<REAL>(b.w*zoom),static_cast<REAL>(b.h*zoom));
             if(r.GetRight()+30*z<area.X || r.X-30*z>area.GetRight() || r.GetBottom()+30*z<area.Y || r.Y-30*z>area.GetBottom())continue;
@@ -468,7 +476,7 @@ public:
                 text(g,L"?",r,22*z,rgb(n->color),Bold|Center);
             }else{
                 if(!root){SolidBrush accent(rgb(n->color));g.FillRectangle(&accent,r.X+10*z,r.Y+14*z,3*z,r.Height-28*z);}
-                auto m=document::metrics(doc,id);
+                const auto& m=boxes.at(id).metrics;
                 const REAL top=r.Y+static_cast<REAL>((b.h-m.title_h-m.note_h)/2*zoom);
                 text(g,wide(n->title),RectF(r.X+16*z,top,r.Width-32*z,static_cast<REAL>(m.title_h*zoom)+2*z),(root?16:14)*z,root?Color(255,255,255,255):t.node_text,(root?Bold:0)|Center|Wrap);
                 if(m.note_h>0)text(g,wide(n->note),RectF(r.X+18*z,top+static_cast<REAL>(m.title_h*zoom)+3*z,r.Width-36*z,static_cast<REAL>((m.note_h-6)*zoom)),12*z,root?Color(235,255,255,255):t.note_text,Wrap|Top);
@@ -481,7 +489,7 @@ public:
                 text(g,wide(info.glyph),RectF(badge.X,badge.Y+0.5f*z,badge.Width,badge.Height),12*z,Color(255,255,255,255),Bold|Center|Symbol);
             }
             if(!n->children.empty()){
-                auto anchor=at(toggle_anchor(doc,id));
+                auto anchor=at(toggle_anchor(doc,id,b));
                 std::wstring sign=n->collapsed?L"+"+std::to_wstring(doc.map->descendants(id).size()-1):L"−";
                 REAL w=(n->collapsed&&sign.size()>2?30:20)*z;
                 panel(g,RectF(anchor.X-w/2,anchor.Y-10*z,w,20*z),t.node,rgb(n->color),10*z);
