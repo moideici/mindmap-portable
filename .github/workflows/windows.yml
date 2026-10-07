@@ -1,0 +1,49 @@
+name: Build and test Windows
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+      - name: Compile and run native tests
+        shell: msys2 {0}
+        run: |
+          cmake -S sources -B sources/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build sources/build
+          ctest --test-dir sources/build --output-on-failure
+      - name: Test the interface in an isolated portable folder
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force sources/build/smoke | Out-Null
+          Copy-Item sources/build/MindMap.exe sources/build/smoke/MindMap.exe
+          $process = Start-Process sources/build/smoke/MindMap.exe -ArgumentList '--smoke-test' -PassThru
+          if (-not $process.WaitForExit(60000)) { $process.Kill(); throw 'Smoke test timed out' }
+          if (-not (Test-Path sources/build/smoke/smoke-test-report.json)) { throw 'Smoke test did not produce a report' }
+          $report = Get-Content sources/build/smoke/smoke-test-report.json -Raw | ConvertFrom-Json
+          if (-not $report.ok) { throw "Smoke test failed: $($report.error)" }
+      - name: Save executable and test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MindMap-Windows
+          path: |
+            sources/build/MindMap.exe
+            sources/build/smoke/test-*.png
+            sources/build/smoke/test-carte.pdf
+            sources/build/smoke/smoke-test-report.json
+            sources/build/Testing/Temporary/LastTest.log

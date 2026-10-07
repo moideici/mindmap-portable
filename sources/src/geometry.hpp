@@ -3,6 +3,7 @@
 // Everything is in map units and independent from GDI+, so it stays deterministic and testable.
 #include "documents.hpp"
 #include <numbers>
+#include <string_view>
 #include <unordered_map>
 
 namespace document {
@@ -45,14 +46,15 @@ inline size_t glyphs(std::string_view s) {
 // Splits text into at most max_lines lines of chars characters, breaking on spaces when possible.
 inline std::vector<std::string> wrap(const std::string& text, size_t chars, size_t max_lines) {
     std::vector<std::string> lines;
+    if (max_lines == 0) return lines;
     chars = std::max<size_t>(chars, 4);
     size_t start = 0;
     while (start <= text.size() && lines.size() < max_lines) {
         size_t end = text.find('\n', start);
-        std::string paragraph = text.substr(start, end == std::string::npos ? std::string::npos : end - start);
-        if (!paragraph.empty() && paragraph.back() == '\r') paragraph.pop_back();
+        std::string_view paragraph(text.data() + start, end == std::string::npos ? text.size() - start : end - start);
+        if (!paragraph.empty() && paragraph.back() == '\r') paragraph.remove_suffix(1);
         do {
-            if (glyphs(paragraph) <= chars) { lines.push_back(paragraph); paragraph.clear(); break; }
+            // Inspect only the next line; long notes need at most max_lines prefixes.
             size_t cut = 0, count = 0, last_space = std::string::npos;
             while (cut < paragraph.size() && count < chars) {
                 if (paragraph[cut] == ' ') last_space = cut;
@@ -60,10 +62,11 @@ inline std::vector<std::string> wrap(const std::string& text, size_t chars, size
                 while (cut < paragraph.size() && (static_cast<unsigned char>(paragraph[cut]) & 0xC0) == 0x80) ++cut;
                 ++count;
             }
+            if (cut == paragraph.size()) { lines.emplace_back(paragraph); paragraph = {}; break; }
             if (last_space != std::string::npos && last_space > 0) cut = last_space;
-            lines.push_back(paragraph.substr(0, cut));
-            paragraph.erase(0, cut);
-            if (!paragraph.empty() && paragraph[0] == ' ') paragraph.erase(0, 1);
+            lines.emplace_back(paragraph.substr(0, cut));
+            paragraph.remove_prefix(cut);
+            if (!paragraph.empty() && paragraph[0] == ' ') paragraph.remove_prefix(1);
         } while (!paragraph.empty() && lines.size() < max_lines);
         if (!paragraph.empty() && !lines.empty()) { lines.back() += "…"; return lines; }
         if (end == std::string::npos) break;
@@ -75,7 +78,7 @@ inline std::vector<std::string> wrap(const std::string& text, size_t chars, size
 }
 
 // Text metrics approximate Segoe UI so that layout, hit-testing and exports agree.
-struct Metrics { double w = 0, h = 0, title_h = 0, note_h = 0; size_t title_chars = 0, note_chars = 0; };
+struct Metrics { double w = 0, h = 0, title_h = 0, note_h = 0, picture_h = 0; size_t title_chars = 0, note_chars = 0; };
 constexpr double title_char = 7.6, root_char = 9.6, note_char = 6.4, title_line = 19, root_line = 23, note_line = 16;
 constexpr size_t max_title_lines = 4, max_note_lines = 4;
 inline Metrics metrics(const State& state, long long id) {
@@ -85,6 +88,8 @@ inline Metrics metrics(const State& state, long long id) {
     Metrics m;
     m.w = std::clamp(static_cast<double>(glyphs(n->title)) * cw + pad, root ? 170.0 : 120.0, root ? 300.0 : 240.0);
     const bool notes = state.show_notes && !n->note.empty();
+    auto picture=state.pictures.find(id);
+    if(picture!=state.pictures.end())m.w=std::max(m.w,220.0);
     if (notes) m.w = std::max(m.w, 210.0);
     m.title_chars = static_cast<size_t>((m.w - pad) / cw);
     m.title_h = static_cast<double>(wrap(n->title, m.title_chars, max_title_lines).size()) * (root ? root_line : title_line);
@@ -92,7 +97,8 @@ inline Metrics metrics(const State& state, long long id) {
         m.note_chars = static_cast<size_t>((m.w - 36) / note_char);
         m.note_h = static_cast<double>(wrap(n->note, m.note_chars, max_note_lines).size()) * note_line + 8;
     }
-    m.h = std::max(root ? 70.0 : 54.0, m.title_h + m.note_h + 26);
+    if(picture!=state.pictures.end())m.picture_h=std::min(132.0,(m.w-36)*picture->second.height/picture->second.width)+10;
+    m.h = std::max(root ? 70.0 : 54.0, m.title_h + m.note_h + m.picture_h + 26);
     return m;
 }
 inline Box box(const State& state, long long id) {

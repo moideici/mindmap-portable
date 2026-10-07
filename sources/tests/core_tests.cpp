@@ -1,5 +1,7 @@
 #include "../src/exports.hpp"
+#ifdef _WIN32
 #include "../src/history.hpp"
+#endif
 #include <cstdio>
 
 static int failures=0;
@@ -74,7 +76,7 @@ int main(){
             "\"nodes\":[{\"id\":1,\"parent\":-1,\"title\":\"Sujet\",\"note\":\"\",\"x\":0,\"y\":0,\"color\":6452456,\"collapsed\":false},"
             "{\"id\":2,\"parent\":1,\"title\":\"A\",\"note\":\"\",\"x\":260,\"y\":0,\"color\":6452456,\"collapsed\":false}]}");
         CHECK(v1.layout==document::LayoutRight && v1.links.empty() && v1.markers.empty());
-        CHECK(document::encode(v1).find("\"version\":2")!=std::string::npos);
+        CHECK(document::encode(v1).find("\"version\":3")!=std::string::npos);
     }
     {
         document::State m;m.map=std::make_shared<MindMap>("Guerre froide");
@@ -143,6 +145,7 @@ int main(){
         CHECK(document::svg(m).find("marker-end")!=std::string::npos);
     }
     // --- Historique compressé ---
+#ifdef _WIN32
     {
         History history;document::State big;
         for(int i=0;i<300;++i)big.map->add(1+(i/10),"Idée de révision numéro "+std::to_string(i));
@@ -158,6 +161,9 @@ int main(){
         history.remember(first);CHECK(history.steps()==1);  // identical snapshots are not stored twice
         history.max_steps=10;for(int i=0;i<30;++i)history.remember(std::to_string(i));CHECK(history.steps()==10&&!history.can_redo());
     }
-    std::printf("core, documents, links, layouts, outlines, history, malformed inputs and 100 memory cycles: %s\n",failures?"FAIL":"PASS");
+#else
+    std::printf("Windows compression history: skipped (non-Windows host)\n");
+#endif
+    std::printf("core, documents, links, layouts, outlines, malformed inputs and 100 memory cycles: %s\n",failures?"FAIL":"PASS");
     return failures?1:0;
 }
