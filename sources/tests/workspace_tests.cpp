@@ -3,6 +3,9 @@
 #include "../src/pdf.hpp"
 #include <cstdio>
 #include <source_location>
+#ifdef _WIN32
+#include <shellapi.h>
+#endif
 
 static int failures=0;
 #define CHECK(c) do {if(!(c)){std::printf("FAIL %d: %s\n",__LINE__,#c);++failures;}}while(0)
@@ -17,7 +20,23 @@ static std::string zip(const std::string& name,const std::string& text){
     const auto index=out.size();le(out,0x02014b50,4);le(out,20,2);le(out,20,2);le(out,0,2);le(out,0,2);le(out,0,4);le(out,document::zip_crc(text),4);le(out,text.size(),4);le(out,text.size(),4);le(out,name.size(),2);le(out,0,2);le(out,0,2);le(out,0,2);le(out,0,2);le(out,0,4);le(out,0,4);out+=name;
     const auto length=out.size()-index;le(out,0x06054b50,4);le(out,0,4);le(out,1,2);le(out,1,2);le(out,length,4);le(out,index,4);le(out,0,2);return out;
 }
+// Narrow argv and __FILE__ are not in a reliable encoding on Windows: accented folders (e.g. "hist géo") would fail.
+static workspace::fs::path argument(int index){
+#ifdef _WIN32
+    int count=0;LPWSTR* wide=CommandLineToArgvW(GetCommandLineW(),&count);
+    workspace::fs::path result=wide&&index<count?workspace::fs::path(wide[index]):workspace::fs::path();
+    if(wide)LocalFree(wide);
+    return result;
+#else
+    (void)index;return {};
+#endif
+}
 int main(int argc,char** argv){
+#ifndef _WIN32
+    auto argument=[&](int index){return workspace::fs::path(argv[index]);};
+#else
+    (void)argv;
+#endif
     const auto folder=workspace::fs::temp_directory_path()/workspace::text_path("mindmap-tests-"+workspace::stamp());workspace::fs::create_directories(folder);
     try{
         workspace::Store store(folder);store.load();CHECK(store.recent.empty());
@@ -50,7 +69,7 @@ int main(int argc,char** argv){
 
         for(const std::string& raw:std::vector<std::string>{"", "a", "ab", "abc", "abcd",std::string("\0\xff\x80",3)})CHECK(document::unbase64(document::base64(raw))==raw);
         for(const std::string bad:{"a","!!!!","====","a===","YQ=A","YQ==YQ==","YR==","YWJ="})rejects([&]{document::unbase64(bad);});
-        const auto png=workspace::read(workspace::fs::path(__FILE__).parent_path()/"fixtures"/"pixel.png");
+        const auto png=workspace::read(workspace::text_path(__FILE__).parent_path()/"fixtures"/"pixel.png");
         auto picture=document::picture_from_png(png);CHECK(picture.width==1&&picture.height==1);
         second.pictures[2]=picture;auto restored=document::decode(document::encode(second));CHECK(restored.pictures==second.pictures);CHECK(document::metrics(second,2).picture_h>0);CHECK(document::svg(second).find("data:image/png;base64,")!=std::string::npos);
         auto copy=document::duplicate_branch(second,2);CHECK(second.pictures.at(copy)==picture);second.map->remove(copy);document::prune(second);CHECK(!second.pictures.count(copy));
@@ -74,12 +93,12 @@ int main(int argc,char** argv){
         auto xml=document::import_map(zip("content.xml","<xmap-content><sheet><topic><title>Sujet</title><children><topics type='attached'><topic><title>Idée</title></topic></topics></children></topic></sheet></xmap-content>"),".xmind","");CHECK(xml.map->nodes.size()==2);
         auto damaged=zip("content.json",json);damaged[35]^=1;rejects([&]{document::import_map(damaged,".xmind","");});rejects([&]{document::zip_member("PK","content.json");});
         CHECK(document::zip_member(zip("other.txt","abc"),"content.json").empty());
-        auto jpeg=workspace::read(workspace::fs::path(__FILE__).parent_path()/"fixtures"/"pixel.jpg");
+        auto jpeg=workspace::read(workspace::text_path(__FILE__).parent_path()/"fixtures"/"pixel.jpg");
         auto pdf=document::pdf_image(jpeg,1,1);CHECK(pdf.starts_with("%PDF-1.4")&&pdf.find("/MediaBox [0 0 842 595]")!=std::string::npos&&pdf.ends_with("%%EOF\n"));
-        if(argc>2)workspace::write(argv[2],pdf);
+        if(argc>2)workspace::write(argument(2),pdf);
         auto offset=std::stoull(pdf.substr(pdf.find("startxref\n")+10));CHECK(pdf.compare(offset,4,"xref")==0);
         rejects([&]{document::pdf_image("not jpeg",100,100);});
-        if(argc>1){auto compressed=document::import_map(workspace::read(argv[1]),".xmind","");CHECK(compressed.map->nodes.size()==3&&compressed.links.size()==1);}
+        if(argc>1){auto compressed=document::import_map(workspace::read(argument(1)),".xmind","");CHECK(compressed.map->nodes.size()==3&&compressed.links.size()==1);}
     }catch(const std::exception& e){std::printf("Exception: %s\n",e.what());++failures;}catch(const PyThrow& e){std::printf("Exception: %s\n",e.p->py_exc_str().c_str());++failures;}
     std::error_code error;workspace::fs::remove_all(folder,error);
     std::printf("workspace, autosave, conflicts, version retention, templates, media, imports and PDF: %s\n",failures?"FAIL":"PASS");return failures?1:0;
