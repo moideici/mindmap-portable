@@ -7,6 +7,8 @@ add_library(mindmap_inflate STATIC vendor/miniz/miniz_tinfl.c)
 set_source_files_properties(vendor/miniz/miniz_tinfl.c PROPERTIES LANGUAGE CXX)
 target_compile_definitions(mindmap_inflate PUBLIC MINIZ_NO_ZLIB_APIS MINIZ_NO_ARCHIVE_APIS)
 if(WIN32)
+  # Compression API needs Windows 8; per-window DPI APIs need Windows 10.
+  add_compile_definitions(WINVER=0x0A00 _WIN32_WINNT=0x0A00 NTDDI_VERSION=0x0A000002)
   enable_language(RC)
   add_executable(MindMap WIN32 src/app.cpp assets/app.rc)
   target_compile_definitions(MindMap PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
