@@ -78,7 +78,7 @@ inline std::vector<std::string> wrap(const std::string& text, size_t chars, size
 }
 
 // Text metrics approximate Segoe UI so that layout, hit-testing and exports agree.
-struct Metrics { double w = 0, h = 0, title_h = 0, note_h = 0; size_t title_chars = 0, note_chars = 0; };
+struct Metrics { double w = 0, h = 0, title_h = 0, note_h = 0, picture_h = 0; size_t title_chars = 0, note_chars = 0; };
 constexpr double title_char = 7.6, root_char = 9.6, note_char = 6.4, title_line = 19, root_line = 23, note_line = 16;
 constexpr size_t max_title_lines = 4, max_note_lines = 4;
 inline Metrics metrics(const State& state, long long id) {
@@ -88,6 +88,8 @@ inline Metrics metrics(const State& state, long long id) {
     Metrics m;
     m.w = std::clamp(static_cast<double>(glyphs(n->title)) * cw + pad, root ? 170.0 : 120.0, root ? 300.0 : 240.0);
     const bool notes = state.show_notes && !n->note.empty();
+    auto picture=state.pictures.find(id);
+    if(picture!=state.pictures.end())m.w=std::max(m.w,220.0);
     if (notes) m.w = std::max(m.w, 210.0);
     m.title_chars = static_cast<size_t>((m.w - pad) / cw);
     m.title_h = static_cast<double>(wrap(n->title, m.title_chars, max_title_lines).size()) * (root ? root_line : title_line);
@@ -95,7 +97,8 @@ inline Metrics metrics(const State& state, long long id) {
         m.note_chars = static_cast<size_t>((m.w - 36) / note_char);
         m.note_h = static_cast<double>(wrap(n->note, m.note_chars, max_note_lines).size()) * note_line + 8;
     }
-    m.h = std::max(root ? 70.0 : 54.0, m.title_h + m.note_h + 26);
+    if(picture!=state.pictures.end())m.picture_h=std::min(132.0,(m.w-36)*picture->second.height/picture->second.width)+10;
+    m.h = std::max(root ? 70.0 : 54.0, m.title_h + m.note_h + m.picture_h + 26);
     return m;
 }
 inline Box box(const State& state, long long id) {

@@ -1,5 +1,6 @@
 #pragma once
 #include "core_bridge.hpp"
+#include "media.hpp"
 #include <sstream>
 #include <iomanip>
 #include <set>
@@ -74,6 +75,7 @@ struct Json {
 };
 class Parser {
     const std::string& s;
+    int max_depth;
     size_t pos = 0;
     [[noreturn]] void fail() const { throw std::runtime_error("JSON invalide a l'octet " + std::to_string(pos)); }
     void space() { while (pos < s.size() && (s[pos] == ' ' || s[pos] == '\n' || s[pos] == '\r' || s[pos] == '\t')) ++pos; }
@@ -124,7 +126,7 @@ class Parser {
         fail();
     }
     Json value(int depth) {
-        if (depth > 70) fail();
+        if (depth > max_depth) fail();
         space();
         if (pos >= s.size()) fail();
         Json j;
@@ -181,7 +183,7 @@ class Parser {
         return j;
     }
 public:
-    explicit Parser(const std::string& input) : s(input) {}
+    explicit Parser(const std::string& input,int maximum_depth=70) : s(input),max_depth(maximum_depth) {}
     Json parse() {
         if (s.size() > max_file_bytes) throw std::runtime_error("Fichier trop volumineux (maximum 8 Mio)");
         if (s.size() >= 3 && s.compare(0, 3, "\xef\xbb\xbf") == 0) pos = 3;
@@ -210,6 +212,7 @@ struct State {
     // Native extensions stored next to the generated tree, keyed by node id.
     std::vector<Link> links;
     std::map<long long, int> markers;
+    std::map<long long, Picture> pictures;
 };
 inline int marker_of(const State& state, long long id) {
     auto it = state.markers.find(id);
@@ -220,6 +223,7 @@ inline void prune(State& state) {
     auto& nodes = state.map->nodes;
     std::erase_if(state.links, [&](const Link& l) { return !nodes.count(l.from) || !nodes.count(l.to) || l.from == l.to; });
     std::erase_if(state.markers, [&](const auto& m) { return !nodes.count(m.first) || m.second <= 0 || m.second >= marker_count; });
+    std::erase_if(state.pictures, [&](const auto& p) { return !nodes.count(p.first); });
 }
 inline bool add_link(State& state, long long from, long long to, const std::string& label = "") {
     if (from == to) throw std::runtime_error("Une idée ne peut pas être reliée à elle-même");
@@ -233,7 +237,7 @@ inline bool add_link(State& state, long long from, long long to, const std::stri
 inline std::string encode(const State& state) {
     std::ostringstream out;
     out.imbue(std::locale::classic());
-    out << std::setprecision(17) << "{\"format\":\"mindmap-portable\",\"version\":2,\"next_id\":" << state.map->next_id
+    out << std::setprecision(17) << "{\"format\":\"mindmap-portable\",\"version\":3,\"next_id\":" << state.map->next_id
         << ",\"selected\":" << state.selected << ",\"view\":{\"zoom\":" << state.zoom << ",\"x\":" << state.pan_x << ",\"y\":" << state.pan_y
         << ",\"layout\":" << state.layout << ",\"notes\":" << (state.show_notes ? "true" : "false")
         << ",\"dark\":" << (state.dark ? "true" : "false") << ",\"minimap\":" << (state.minimap ? "true" : "false") << "},\"nodes\":[";
@@ -247,6 +251,7 @@ inline std::string encode(const State& state) {
             << ",\"note\":" << quote(n->note) << ",\"x\":" << n->x << ",\"y\":" << n->y
             << ",\"color\":" << n->color << ",\"collapsed\":" << (n->collapsed ? "true" : "false");
         if (int marker = marker_of(state, id)) out << ",\"marker\":" << marker;
+        if(auto p=state.pictures.find(id);p!=state.pictures.end())out<<",\"picture\":"<<quote(p->second.data);
         out << '}';
     }
     out << "],\"links\":[";
@@ -257,7 +262,7 @@ inline std::string encode(const State& state) {
         out << "{\"from\":" << l.from << ",\"to\":" << l.to << ",\"label\":" << quote(l.label) << '}';
     }
     auto encoded=out.str() + "]}\n";
-    if(encoded.size()>max_file_bytes)throw std::runtime_error("Carte trop volumineuse (8 Mio maximum) : raccourcissez les notes");
+    if(encoded.size()>max_file_bytes)throw std::runtime_error("Carte trop volumineuse (8 Mio maximum) : retirez des images ou raccourcissez les notes");
     return encoded;
 }
 inline State decode(const std::string& input) {
@@ -265,7 +270,7 @@ inline State decode(const std::string& input) {
     if (j.at("format").text() != "mindmap-portable")
         throw std::runtime_error("Format ou version non pris en charge");
     // Version 1 files (before links, markers and layouts) still open unchanged.
-    const auto version = j.at("version").integer(1, 2);
+    const auto version = j.at("version").integer(1, 3);
     auto optional = [](const Json& owner, const char* name) -> const Json* {
         auto it = owner.object.find(name);
         return owner.kind == Json::Object && it != owner.object.end() ? &it->second : nullptr;
@@ -290,11 +295,12 @@ inline State decode(const std::string& input) {
             if (value) result.markers[id] = static_cast<int>(value);
         }
         result.map->nodes[id] = n;
+        if(auto picture=optional(item,"picture"))result.pictures[id]=picture_from_png(unbase64(picture->text()));
         max_id = std::max(max_id, id);
     }
     if (!result.map->nodes.count(1) || result.map->nodes.at(1)->parent != -1) throw std::runtime_error("Sujet central absent");
-    for (const auto& pair : result.map->nodes) {
-        auto n = pair.second;
+    for (const auto& item : nodes.array) {
+        auto n = result.map->nodes.at(item.at("id").integer(1,2147483646));
         if (n->id == 1) continue;
         if (n->parent == n->id || !result.map->nodes.count(n->parent)) throw std::runtime_error("Parent absent ou circulaire");
         result.map->nodes.at(n->parent)->children.push_back(n->id);

@@ -76,7 +76,7 @@ int main(){
             "\"nodes\":[{\"id\":1,\"parent\":-1,\"title\":\"Sujet\",\"note\":\"\",\"x\":0,\"y\":0,\"color\":6452456,\"collapsed\":false},"
             "{\"id\":2,\"parent\":1,\"title\":\"A\",\"note\":\"\",\"x\":260,\"y\":0,\"color\":6452456,\"collapsed\":false}]}");
         CHECK(v1.layout==document::LayoutRight && v1.links.empty() && v1.markers.empty());
-        CHECK(document::encode(v1).find("\"version\":2")!=std::string::npos);
+        CHECK(document::encode(v1).find("\"version\":3")!=std::string::npos);
     }
     {
         document::State m;m.map=std::make_shared<MindMap>("Guerre froide");

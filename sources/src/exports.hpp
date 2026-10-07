@@ -26,6 +26,7 @@ inline long long duplicate_branch(State& state, long long id) {
     for (size_t i = 0; i < original.size() && i < copied.size(); ++i) {
         remap[original[i]] = copied[i];
         if (int marker = marker_of(state, original[i])) state.markers[copied[i]] = marker;
+        if(auto p=state.pictures.find(original[i]);p!=state.pictures.end())state.pictures[copied[i]]=p->second;
     }
     auto links = state.links;
     for (const auto& l : links)
@@ -243,7 +244,7 @@ inline std::string svg(const State& state) {
         if (!root) out << "<rect x=\"" << r.left()+10 << "\" y=\"" << r.top()+14 << "\" width=\"3\" height=\"" << r.h-28 << "\" fill=\"" << hex_color(n->color) << "\"/>";
         auto lines = wrap(n->title, m.title_chars, max_title_lines);
         const double line_h = root ? root_line : title_line;
-        double y = r.top() + 13 + (r.h - 26 - m.title_h - m.note_h) / 2 + line_h * .75;
+        double y = r.top() + 13 + (r.h - 26 - m.title_h - m.note_h - m.picture_h) / 2 + line_h * .75;
         out << "<text text-anchor=\"middle\" font-family=\"Segoe UI, sans-serif\" font-size=\"" << (root ? 16 : 14) << "\""
             << (root ? " font-weight=\"bold\"" : "") << " fill=\"" << (root ? "#ffffff" : "#253047") << "\">";
         for (const auto& line : lines) { out << "<tspan x=\"" << r.x << "\" y=\"" << y << "\">" << xml(line) << "</tspan>"; y += line_h; }
@@ -258,6 +259,11 @@ inline std::string svg(const State& state) {
             const auto& info = marker_info(marker);
             out << "<circle cx=\"" << r.left()+6 << "\" cy=\"" << r.top()+6 << "\" r=\"11\" fill=\"" << hex_color(info.color) << "\" stroke=\"white\" stroke-width=\"2\"/>"
                 << "<text x=\"" << r.left()+6 << "\" y=\"" << r.top()+10.5 << "\" text-anchor=\"middle\" font-family=\"Segoe UI Symbol, sans-serif\" font-size=\"12\" font-weight=\"bold\" fill=\"white\">" << info.glyph << "</text>";
+        }
+        if(auto p=state.pictures.find(id);p!=state.pictures.end()){
+            const double ih=m.picture_h-10,iw=std::min(r.w-36,ih*p->second.width/p->second.height);
+            out<<"<image x=\""<<r.x-iw/2<<"\" y=\""<<r.bottom()-13-ih<<"\" width=\""<<iw<<"\" height=\""<<ih
+               <<"\" href=\"data:image/png;base64,"<<p->second.data<<"\"/>";
         }
         out << "</g>\n";
     }

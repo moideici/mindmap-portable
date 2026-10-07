@@ -14,6 +14,9 @@
 #include <unordered_map>
 #include "exports.hpp"
 #include "history.hpp"
+#include "workspace.hpp"
+#include "imports.hpp"
+#include "pdf.hpp"
 
 using namespace Gdiplus;
 namespace fs = std::filesystem;
@@ -24,7 +27,9 @@ enum Command { New=100, Open, Save, SaveAs, Add, Sibling, Delete, Duplicate, Und
     Collapse, ExportPng, ExportSvg, ExportMd, Apply, Help, ImportOutline, PasteOutline, CopyBranch,
     LayoutRight, LayoutBalanced, LayoutRadial, ToggleNotes, ToggleMinimap, ToggleDark, LinkMode,
     Revision, RevealNext, RevealAll, RevisionRestart, RevisionReview, RevisionStop, CustomColor,
-    DeleteLink, ReverseLink, SelectRoot, Color0=150, Marker0=170, LinkLabel0=190, LinkRow0=220, LinkRowDelete0=240 };
+    DeleteLink, ReverseLink, SelectRoot, Home, AddImage, RemoveImage, ExportPdf, SaveTemplate, RestoreVersions, RecoverLegacy, BrowseDrafts, DeleteDraft,
+    Color0=150, Marker0=170, LinkLabel0=190, LinkRow0=220, LinkRowDelete0=240,
+    BrowseTemplates=500, BrowseRecent=501, Template0=600, Recent0=700, Draft0=720, CustomTemplate0=800, Restore0=900 };
 constexpr int search_id=401, title_id=402, note_id=403;
 constexpr int link_label_custom=8, link_label_none=7;
 std::wstring wide(const std::string& text) {
@@ -174,6 +179,11 @@ std::optional<std::wstring> ask_text(HWND owner,const wchar_t* caption,const wch
 }
 
 struct Button { RectF rect; int command; };
+struct PictureStream {
+    IStream* value=nullptr;
+    ~PictureStream(){if(value)value->Release();}
+};
+struct CachedPicture {PictureStream stream;std::unique_ptr<Bitmap> bitmap;std::string encoded;};
 enum TextFlags { Bold=1, Center=2, Right=4, Wrap=8, Top=16, Symbol=32 };
 class App {
 public:
@@ -182,6 +192,13 @@ public:
     HBRUSH edit_brush=nullptr;
     document::State state;
     fs::path directory, current_file;
+    workspace::Store store;
+    fs::path draft_file;
+    std::string disk_snapshot;
+    bool home=true;
+    std::vector<workspace::Card> draft_cards,custom_templates;
+    std::vector<fs::path> restore_paths;
+    std::map<long long,std::unique_ptr<CachedPicture>> picture_cache;
     History history;
     std::vector<Button> buttons;
     std::vector<std::pair<RectF,long long>> outline_hits;
@@ -206,7 +223,7 @@ public:
     static constexpr long long palette[6]={0x6274E8,0x26A69A,0xDB9A36,0xCB6BA0,0x539BCB,0xA483D4};
     COLORREF custom_colors[16]{};
 
-    explicit App(fs::path folder,bool test) : directory(std::move(folder)),smoke(test) {}
+    explicit App(fs::path folder,bool test) : directory(std::move(folder)),store(directory,atomic_write),smoke(test) {}
     ~App(){ if(edit_font) DeleteObject(edit_font); if(edit_brush) DeleteObject(edit_brush); }
     const Theme& colors() const { return theme(state.dark); }
     // WS_CLIPCHILDREN keeps the text fields out of the parent's repaint, so they no longer flicker.
@@ -234,19 +251,23 @@ public:
     }
     // Keeps view preferences (theme, mini-map) when another snapshot or document replaces the map.
     void adopt(document::State loaded){
+        picture_cache.clear();
         loaded.dark=state.dark;loaded.minimap=state.minimap;
         state=std::move(loaded);
         if(selected_link>=static_cast<int>(state.links.size()))selected_link=-1;
         if(revising){std::erase_if(revealed,[&](long long id){return !state.map->nodes.count(id);});}
     }
     void remember(std::string before) { history.remember(before); }
-    void changed(const std::wstring& message=L"Modifications enregistrées dans la session portable") {
+    void changed(const std::wstring& message=L"Modifications en cours de sauvegarde…") {
         document::prune(state);
         if(selected_link>=static_cast<int>(state.links.size()))selected_link=-1;
         dirty=true; autosave_pending=true; status=message; refresh_outline(); repaint(); update_caption();
     }
     void update_caption(){
         std::wstring caption=L"MindMap — "+wide(state.map->nodes.at(1)->title);
+        if(home)caption=L"MindMap — Accueil";
+        else if(current_file.empty())caption+=L" · Brouillon";
+        else caption+=L" · "+current_file.filename().wstring();
         if(dirty) caption+=L" *";
         SetWindowTextW(window,caption.c_str());
     }
@@ -275,6 +296,7 @@ public:
         pending_edit=false; updating=false;
     }
     bool commit_edit(){
+        if(home)return true;
         // In revision mode the editors are hidden and keep stale text: never write it back.
         if(revising){pending_edit=false;return true;}
         // Read actual controls even when a programmatic edit does not emit EN_CHANGE.
@@ -290,7 +312,7 @@ public:
         auto current=state.map->nodes.at(state.selected);
         if(t==current->title && n==current->note){pending_edit=false;return true;}
         std::string before=document::encode(state);
-        const bool resized=current->title.size()!=t.size()||(state.show_notes&&current->note!=n);
+        const bool resized=current->title!=t||(state.show_notes&&current->note!=n);
         state.map->rename(state.selected,t,n);
         // Sizes follow the text: re-run the layout only when a box may have grown or shrunk.
         if(resized&&!dragging)document::layout(state);
@@ -382,23 +404,18 @@ public:
         note=CreateWindowExW(WS_EX_CLIENTEDGE,L"EDIT",L"",WS_CHILD|WS_VISIBLE|WS_TABSTOP|ES_MULTILINE|ES_AUTOVSCROLL|WS_VSCROLL|ES_WANTRETURN,0,0,1,1,window,reinterpret_cast<HMENU>(static_cast<INT_PTR>(note_id)),nullptr,nullptr);
         SendMessageW(search,EM_SETCUEBANNER,0,reinterpret_cast<LPARAM>(L"Rechercher une idée…"));
         SendMessageW(title,EM_SETLIMITTEXT,256,0); SendMessageW(note,EM_SETLIMITTEXT,8000,0); SendMessageW(search,EM_SETLIMITTEXT,200,0);
-        create_demo();
-        if(!smoke && fs::exists(directory/L"session.mindmap")){
-            try {state=document::decode(read_file(directory/L"session.mindmap"));status=L"Session restaurée · Ctrl+S pour enregistrer une carte";}
-            catch(const std::exception& e){
-                auto backup=directory/(L"session-invalide-"+std::to_wstring(GetTickCount64())+L".mindmap");
-                std::error_code error;fs::copy_file(directory/L"session.mindmap",backup,fs::copy_options::none,error);
-                status=(error?L"Session illisible · copie de secours impossible · ":L"Session illisible · copie de secours conservée · ")+wide(e.what());
-                if(error)retry_save_at=std::numeric_limits<ULONGLONG>::max();
-            }
-        }
+        home=!smoke;
+        if(smoke)create_demo();
+        else try{store.load();refresh_home();status=L"Choisissez une carte ou un modèle pour commencer.";}
+             catch(const std::exception& e){status=L"Liste des cartes indisponible · "+wide(e.what());}
         apply_theme();
         resize(); refresh_inspector(); refresh_outline(); update_caption();
-        if(!fs::exists(directory/L"session.mindmap") || smoke) fit();
+        show_editors(!home);
+        if(smoke)fit();
         if(!smoke){
             int argc=0;LPWSTR* argv=CommandLineToArgvW(GetCommandLineW(),&argc);
             if(argv&&argc>1){
-                try{open_path(fs::path(argv[1]));}
+                try{import_path(fs::path(argv[1]));}
                 catch(const std::exception& e){status=L"Ouverture impossible · "+wide(e.what());}
             }
             if(argv)LocalFree(argv);
@@ -477,10 +494,15 @@ public:
             }else{
                 if(!root){SolidBrush accent(rgb(n->color));g.FillRectangle(&accent,r.X+10*z,r.Y+14*z,3*z,r.Height-28*z);}
                 const auto& m=boxes.at(id).metrics;
-                const REAL top=r.Y+static_cast<REAL>((b.h-m.title_h-m.note_h)/2*zoom);
+                const REAL top=r.Y+static_cast<REAL>((b.h-m.title_h-m.note_h-m.picture_h)/2*zoom);
                 text(g,wide(n->title),RectF(r.X+16*z,top,r.Width-32*z,static_cast<REAL>(m.title_h*zoom)+2*z),(root?16:14)*z,root?Color(255,255,255,255):t.node_text,(root?Bold:0)|Center|Wrap);
                 if(m.note_h>0)text(g,wide(n->note),RectF(r.X+18*z,top+static_cast<REAL>(m.title_h*zoom)+3*z,r.Width-36*z,static_cast<REAL>((m.note_h-6)*zoom)),12*z,root?Color(235,255,255,255):t.note_text,Wrap|Top);
                 else if(!n->note.empty()){SolidBrush dot(root?Color(255,255,255,255):rgb(n->color));g.FillEllipse(&dot,r.GetRight()-13*z,r.GetBottom()-13*z,5*z,5*z);}
+                if(auto p=doc.pictures.find(id);p!=doc.pictures.end()){
+                    const REAL ih=static_cast<REAL>((m.picture_h-10)*zoom),iw=static_cast<REAL>(std::min(b.w-36,(m.picture_h-10)*p->second.width/p->second.height)*zoom);
+                    try{auto& image=picture(id,p->second);g.DrawImage(&image,RectF(r.X+(r.Width-iw)/2,r.GetBottom()-13*z-ih,iw,ih));}
+                    catch(const std::exception&){text(g,L"Image illisible",RectF(r.X,r.GetBottom()-13*z-ih,r.Width,ih),12*z,t.subtle,Center);}
+                }
             }
             if(int marker=document::marker_of(doc,id)){
                 const auto& info=document::marker_info(marker);
@@ -603,7 +625,9 @@ public:
             text(g,L"×",RectF(x+216,r.Y,26,25),14,t.subtle,Center);
         }
         if(link_rows.empty())text(g,L"Aucun lien · L puis clic sur une autre idée",RectF(x,420,242,25),11,t.subtle);
-        text(g,L"Notes",RectF(x,500,242,20),12,t.text,Bold);
+        text(g,L"Notes",RectF(x,500,80,20),12,t.text,Bold);
+        button(g,x+76,493,116,state.pictures.count(state.selected)?L"Changer l’image":L"+ Image / schéma",AddImage,false,false,true,26);
+        if(state.pictures.count(state.selected))button(g,x+198,493,44,L"×",RemoveImage,false,false,true,26);
         button(g,x,height-84,242,L"Appliquer les modifications",Apply,true);
     }
     void paint_revision(Graphics& g){
@@ -629,6 +653,51 @@ public:
         button(g,x,height-100,119,L"✓ Acquis  (2)",Marker0+2,false,marker==2);
         button(g,x+123,height-100,119,L"? À revoir  (3)",Marker0+3,false,marker==3);
     }
+    void paint_home(Graphics& g){
+        const auto& t=colors();buttons.clear();outline_hits.clear();minimap_rect=RectF(0,0,0,0);
+        text(g,L"MindMap",RectF(44,28,300,45),30,t.title,Bold);
+        text(g,L"Choisissez une carte. Vos brouillons et versions sont conservés automatiquement.",RectF(44,80,width-88,28),14,t.subtle);
+        button(g,44,126,170,L"+ Nouvelle carte",New,true);
+        button(g,226,126,170,L"Ouvrir une carte…",Open);
+        button(g,408,126,170,L"Importer un fichier…",ImportOutline);
+        button(g,width-202,38,74,state.dark?L"Clair":L"Sombre",ToggleDark);
+        button(g,width-116,38,74,L"Aide",Help);
+        text(g,L"PARTIR D’UN MODÈLE",RectF(44,184,width-88,22),11,t.subtle,Bold);
+        const REAL model_w=(width-112)/5;
+        for(size_t i=0;i<workspace::models().size();++i){
+            const auto& model=workspace::models()[i];REAL x=44+i*(model_w+6);
+            RectF card(x,216,model_w,108);panel(g,card,t.panel,t.border,12);buttons.push_back({card,static_cast<int>(Template0+i)});
+            text(g,wide(model.name),RectF(x+14,230,model_w-28,30),14,t.title,Bold);
+            text(g,wide(model.description),RectF(x+14,266,model_w-28,44),12,t.subtle,Wrap|Top);
+        }
+        const REAL column=(width-108)/2;
+        text(g,L"CARTES RÉCENTES",RectF(44,350,column,24),11,t.subtle,Bold);
+        for(size_t i=0;i<std::min<size_t>(4,store.recent.size());++i){
+            const auto& path=store.recent[i];RectF row(44,384+i*52,column,46);
+            panel(g,row,t.panel,t.border,8);buttons.push_back({row,static_cast<int>(Recent0+i)});
+            text(g,path.filename().wstring(),RectF(58,row.Y+3,column-28,23),13,t.title,Bold);
+            text(g,path.parent_path().wstring(),RectF(58,row.Y+25,column-28,16),10,t.subtle);
+        }
+        if(store.recent.empty())text(g,L"Les cartes que vous ouvrez apparaîtront ici.",RectF(44,386,column,40),13,t.subtle,Wrap);
+        if(store.recent.size()>4)button(g,44,596,210,L"Toutes les cartes récentes…",BrowseRecent);
+        const REAL right=64+column;
+        text(g,L"BROUILLONS À REPRENDRE",RectF(right,350,column,24),11,t.subtle,Bold);
+        for(size_t i=0;i<std::min<size_t>(3,draft_cards.size());++i){
+            RectF row(right,384+i*52,column,46);panel(g,row,t.panel,t.border,8);buttons.push_back({row,static_cast<int>(Draft0+i)});
+            text(g,wide(draft_cards[i].title),RectF(right+14,row.Y+3,column-28,23),13,t.title,Bold);
+            text(g,L"Brouillon · nom et emplacement à choisir",RectF(right+14,row.Y+25,column-28,16),10,t.subtle);
+        }
+        if(draft_cards.empty())text(g,L"Une nouvelle carte est protégée ici jusqu’à son premier enregistrement.",RectF(right,386,column,54),13,t.subtle,Wrap|Top);
+        if(draft_cards.size()>3)button(g,right,545,210,L"Voir tous les brouillons…",BrowseDrafts);
+        if(!store.legacy_migrated&&fs::exists(directory/L"session.mindmap"))button(g,right,588,column,L"Récupérer l’ancienne session",RecoverLegacy);
+        if(!custom_templates.empty()){
+            text(g,L"MES MODÈLES",RectF(44,608,column,20),11,t.subtle,Bold);
+            for(size_t i=0;i<std::min<size_t>(3,custom_templates.size());++i)
+                button(g,44+i*(column/3+2),636,column/3-4,wide(custom_templates[i].title),static_cast<int>(CustomTemplate0+i));
+        }
+        if(custom_templates.size()>3)button(g,width-260,636,216,L"Tous mes modèles…",BrowseTemplates);
+        text(g,status,RectF(44,height-32,width-88,24),11,t.subtle);
+    }
     void paint(HDC dc){
         RECT client;GetClientRect(window,&client);
         // The back buffer is reused between frames instead of allocating a full-window bitmap each time.
@@ -637,11 +706,12 @@ public:
         const Theme& t=colors();
         Graphics g(back_buffer.get());g.SetSmoothingMode(SmoothingModeAntiAlias);g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);g.ScaleTransform(scale,scale);
         g.Clear(t.bg);
+        if(home){paint_home(g);Graphics target(dc);target.DrawImage(back_buffer.get(),0,0);return;}
         SolidBrush header(t.header);g.FillRectangle(&header,0.0f,0.0f,width,120.0f);
         panel(g,RectF(24,20,36,36),rgb(0x6274E8),Color(0,0,0,0),11);
         text(g,L"M",RectF(24,20,36,36),22,Color(255,255,255,255),Bold|Center);
         text(g,L"MindMap",RectF(72,14,185,34),24,t.title,Bold);
-        text(g,L"Un espace clair pour relier vos idées",RectF(73,46,350,22),12,t.subtle);
+        text(g,current_file.empty()?L"Brouillon · Enregistrer pour choisir son emplacement":current_file.wstring(),RectF(73,46,width-300,22),12,t.subtle);
         buttons.clear();
         text(g,L"PORTABLE  •  SANS COMPTE",RectF(width-480,24,290,26),11,t.subtle,Right);
         button(g,width-178,22,74,state.dark?L"Clair":L"Sombre",ToggleDark,false,false,true,30);
@@ -657,6 +727,7 @@ public:
         button(g,722,79,64,L"Relier",LinkMode,false,linking);
         button(g,794,79,70,L"Réviser",Revision,false,revising);
         button(g,872,79,86,L"Enregistrer",Save);
+        button(g,964,79,70,L"Accueil",Home);
         panel(g,RectF(16,132,210,height-177),t.panel,t.border,12);
         text(g,L"PLAN DE LA CARTE",RectF(28,133,186,18),10,t.subtle,Bold);
         outline_hits.clear();
@@ -700,10 +771,11 @@ public:
         text(g,status,RectF(265,height-31,width-285,25),11,t.subtle);
         Graphics target(dc);target.DrawImage(back_buffer.get(),0,0);
     }
-    fs::path dialog(bool save,const wchar_t* filter,const wchar_t* extension,const wchar_t* suggestion){
+    fs::path dialog(bool save,const wchar_t* filter,const wchar_t* extension,const wchar_t* suggestion,const fs::path& start={}){
         wchar_t filename[32768]{};
-        std::wstring initial=directory.wstring();
-        if(save){auto proposed=directory/suggestion;wcsncpy(filename,proposed.c_str(),32767);}
+        auto folder=!start.empty()?start:current_file.empty()?directory:current_file.parent_path();
+        std::wstring initial=folder.wstring();
+        if(save){auto proposed=folder/suggestion;wcsncpy(filename,proposed.c_str(),32767);}
         OPENFILENAMEW settings{};settings.lStructSize=sizeof(settings);settings.hwndOwner=window;
         settings.lpstrFilter=filter;settings.lpstrFile=filename;settings.nMaxFile=32768;
         settings.lpstrInitialDir=initial.c_str();settings.lpstrDefExt=extension;
@@ -712,41 +784,110 @@ public:
         return {};
     }
     bool save(bool choose){
+        if(home)return false;
         if(!commit_edit())return false;
         auto path=current_file;
-        if(choose||path.empty())path=dialog(true,L"Carte mentale (*.mindmap)\0*.mindmap\0\0",L"mindmap",L"Ma carte.mindmap");
+        if(choose||path.empty()){
+            auto name=wide(state.map->nodes.at(1)->title);for(auto& ch:name)if(wcschr(L"<>:\"/\\|?*",ch)||ch<32)ch=L'_';
+            while(!name.empty()&&(name.back()==L'.'||name.back()==L' '))name.pop_back();if(name.empty())name=L"Ma carte";name=name.substr(0,120)+L".mindmap";
+            path=dialog(true,L"Carte mentale (*.mindmap)\0*.mindmap\0\0",L"mindmap",name.c_str());
+        }
         if(path.empty())return false;
-        atomic_write(path,document::encode(state));current_file=path;dirty=false;retry_save_at=0;
-        autosave_pending=true;status=L"Carte enregistrée · "+path.filename().wstring();update_caption();repaint();return true;
+        auto data=document::encode(state);auto expected=path==current_file&&!disk_snapshot.empty()?&disk_snapshot:nullptr;
+        store.save_named(path,data,expected,true);current_file=path;disk_snapshot=data;dirty=false;retry_save_at=0;autosave_pending=false;
+        store.forget_draft(draft_file);draft_file.clear();
+        status=L"Carte enregistrée · "+path.wstring();
+        try{store.opened(path);}catch(const std::exception& e){status+=L" · liste des cartes non enregistrée : "+wide(e.what());}
+        update_caption();repaint();return true;
     }
     bool may_replace(){
         if(!commit_edit())return false;
-        if(!dirty)return true;
-        int answer=MessageBoxW(window,L"Enregistrer la carte actuelle avant de continuer ?\nLa session automatique protège aussi vos dernières modifications.",L"Changer de carte",MB_YESNOCANCEL|MB_ICONQUESTION);
-        return answer==IDNO||(answer==IDYES&&save(false));
+        checkpoint();return true;
     }
     void loaded_document(bool is_dirty){
         stop_revision();linking=false;selected_link=-1;
+        updating=true;SetWindowTextW(search,L"");updating=false;outline_scroll=0;retry_save_at=0;
+        home=false;show_editors(true);picture_cache.clear();
         history.clear();dirty=is_dirty;autosave_pending=true;refresh_inspector();refresh_outline();update_caption();repaint();
     }
     void open_path(const fs::path& path){
-        adopt(document::decode(read_file(path)));current_file=path;loaded_document(false);
+        auto data=read_file(path);auto loaded=document::decode(data);
+        adopt(std::move(loaded));current_file=fs::absolute(path).lexically_normal();disk_snapshot=data;draft_file.clear();loaded_document(false);
+        status=L"Carte ouverte · "+current_file.wstring();
+        try{store.opened(current_file);}catch(const std::exception& e){status+=L" · liste des cartes indisponible : "+wide(e.what());}
+        repaint();
+    }
+    void import_path(const fs::path& path){
+        auto ext=lowercase(path.extension().wstring());if(ext==L".mindmap"){open_path(path);fit();return;}
+        auto imported=document::import_map(read_file(path),utf8(ext),utf8(path.stem().wstring()));
+        document::encode(imported);
+        adopt(std::move(imported));current_file.clear();disk_snapshot.clear();draft_file.clear();loaded_document(true);fit();
+        status=L"Carte importée · brouillon protégé automatiquement · Enregistrer pour choisir son nom";repaint();
     }
     void checkpoint(){
-        if(!commit_edit())return;
-        if(autosave_pending){atomic_write(directory/L"session.mindmap",document::encode(state));autosave_pending=false;const wchar_t* saved=L"Session sauvegardée dans le dossier portable";if(status!=saved){status=saved;repaint();}}
+        if(home||!commit_edit()||!autosave_pending)return;
+        auto data=document::encode(state);
+        if(current_file.empty()){
+            if(!dirty){autosave_pending=false;return;}
+            if(draft_file.empty())draft_file=store.new_draft();store.draft(draft_file,data);
+            status=L"Brouillon protégé · Enregistrer pour choisir un nom et un emplacement";
+        }else{
+            try{store.save_named(current_file,data,disk_snapshot.empty()?nullptr:&disk_snapshot,false);}
+            catch(const std::exception&){
+                if(draft_file.empty())draft_file=store.new_draft();store.draft(draft_file,data);throw;
+            }
+            disk_snapshot=data;dirty=false;status=L"Enregistré automatiquement · "+current_file.wstring();
+            store.forget_draft(draft_file);draft_file.clear();
+        }
+        autosave_pending=false;update_caption();repaint();
     }
-    void export_png(const fs::path& path){
+    void show_editors(bool show){for(HWND control:{search,title,note})ShowWindow(control,show?SW_SHOW:SW_HIDE);}
+    void refresh_home(){draft_cards=store.cards("drafts");custom_templates=store.cards("templates");}
+    void go_home(){if(!may_replace())return;stop_revision();home=true;autosave_pending=false;show_editors(false);refresh_home();update_caption();repaint();}
+    static std::string bitmap_bytes(Bitmap& image,const wchar_t* mime){
+        UINT count=0,size=0;GetImageEncodersSize(&count,&size);std::vector<BYTE> codecs(size);
+        auto* info=reinterpret_cast<ImageCodecInfo*>(codecs.data());GetImageEncoders(count,size,info);CLSID encoder{};bool found=false;
+        for(UINT i=0;i<count;++i)if(wcscmp(info[i].MimeType,mime)==0){encoder=info[i].Clsid;found=true;break;}
+        if(!found)throw std::runtime_error("Encodeur d'image indisponible");PictureStream stream;
+        if(CreateStreamOnHGlobal(nullptr,TRUE,&stream.value)!=S_OK||image.Save(stream.value,&encoder,nullptr)!=Ok)throw std::runtime_error("Encodage d'image impossible");
+        STATSTG stat{};if(stream.value->Stat(&stat,STATFLAG_NONAME)!=S_OK||stat.cbSize.QuadPart>64*1024*1024)throw std::runtime_error("Image exportée trop grande");
+        std::string bytes(static_cast<size_t>(stat.cbSize.QuadPart),'\0');LARGE_INTEGER start{};ULONG read=0;
+        if(stream.value->Seek(start,STREAM_SEEK_SET,nullptr)!=S_OK||stream.value->Read(bytes.data(),static_cast<ULONG>(bytes.size()),&read)!=S_OK||read!=bytes.size())throw std::runtime_error("Lecture d'image impossible");return bytes;
+    }
+    Bitmap& picture(long long id,const document::Picture& source){
+        auto it=picture_cache.find(id);if(it!=picture_cache.end()&&it->second->encoded==source.data)return *it->second->bitmap;
+        if(picture_cache.size()>=16)picture_cache.clear();auto cached=std::make_unique<CachedPicture>();
+        auto bytes=document::unbase64(source.data);
+        if(CreateStreamOnHGlobal(nullptr,TRUE,&cached->stream.value)!=S_OK)throw std::runtime_error("Image inaccessible");ULONG written=0;
+        if(cached->stream.value->Write(bytes.data(),static_cast<ULONG>(bytes.size()),&written)!=S_OK||written!=bytes.size())throw std::runtime_error("Image inaccessible");
+        LARGE_INTEGER start{};cached->stream.value->Seek(start,STREAM_SEEK_SET,nullptr);
+        cached->bitmap.reset(Bitmap::FromStream(cached->stream.value));
+        if(!cached->bitmap||cached->bitmap->GetLastStatus()!=Ok)throw std::runtime_error("Image PNG illisible");
+        cached->encoded=source.data;auto* result=cached->bitmap.get();picture_cache[id]=std::move(cached);return *result;
+    }
+    void attach_picture(const fs::path& path){
+        Bitmap source(path.c_str());if(source.GetLastStatus()!=Ok)throw std::runtime_error("Image illisible : choisissez un PNG, JPEG ou BMP");
+        const auto w=source.GetWidth(),h=source.GetHeight();if(!w||!h||static_cast<uint64_t>(w)*h>64000000)throw std::runtime_error("Image trop grande (64 millions de pixels maximum)");
+        double factor=std::min({1.0,640.0/w,640.0/h});UINT rw=std::max(1u,static_cast<UINT>(w*factor)),rh=std::max(1u,static_cast<UINT>(h*factor));
+        Bitmap resized(rw,rh,PixelFormat32bppARGB);Graphics g(&resized);g.SetInterpolationMode(InterpolationModeHighQualityBicubic);g.Clear(Color(0,255,255,255));g.DrawImage(&source,0,0,rw,rh);
+        auto media=document::picture_from_png(bitmap_bytes(resized,L"image/png"));auto before=document::encode(state);
+        state.pictures[state.selected]=std::move(media);
+        try{document::encode(state);}catch(...){adopt(document::decode(before));throw;}
+        picture_cache.erase(state.selected);document::layout(state);remember(std::move(before));changed(L"Image ajoutée · intégrée au fichier de la carte");
+    }
+    std::unique_ptr<Bitmap> map_bitmap(){
         auto b=document::full_bounds(state);
         double w=b.right-b.left+100,h=b.bottom-b.top+100;
         double factor=std::min({1.5,8192.0/w,8192.0/h,std::sqrt(16000000.0/(w*h))});
         INT bw=std::max(1,static_cast<int>(std::ceil(w*factor))),bh=std::max(1,static_cast<int>(std::ceil(h*factor)));
-        Bitmap image(bw,bh,PixelFormat32bppARGB);
-        if(image.GetLastStatus()!=Ok)throw std::runtime_error("Memoire insuffisante pour l'image");
-        Graphics g(&image);g.SetSmoothingMode(SmoothingModeAntiAlias);g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);g.Clear(theme(false).bg);
+        auto image=std::make_unique<Bitmap>(bw,bh,PixelFormat32bppARGB);
+        if(image->GetLastStatus()!=Ok)throw std::runtime_error("Memoire insuffisante pour l'image");
+        Graphics g(image.get());g.SetSmoothingMode(SmoothingModeAntiAlias);g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);g.Clear(theme(false).bg);
         draw_map(g,state,RectF(0,0,static_cast<REAL>(bw),static_cast<REAL>(bh)),factor,(-b.left+50)*factor,(-b.top+50)*factor,false);
-        save_png(image,path);
+        return image;
     }
+    void export_png(const fs::path& path){auto image=map_bitmap();save_png(*image,path);}
+    void export_pdf(const fs::path& path){auto image=map_bitmap();atomic_write(path,document::pdf_image(bitmap_bytes(*image,L"image/jpeg"),image->GetWidth(),image->GetHeight()));}
     static void save_png(Bitmap& image,const fs::path& path){
         UINT count=0,size=0;GetImageEncodersSize(&count,&size);
         std::vector<BYTE> codecs(size);auto* info=reinterpret_cast<ImageCodecInfo*>(codecs.data());GetImageEncoders(count,size,info);
@@ -769,7 +910,12 @@ public:
             L"Réviser\nR : les idées sont masquées. Espace les découvre une à une, 2 / 3 : acquis / à revoir, Échap : terminer.\n\n"
             L"Plans\nCtrl+Maj+C copie une branche en texte ; Ctrl+Maj+V colle un plan (Markdown, liste ou texte indenté) sous l’idée choisie.\nFichier > Importer un plan crée une carte depuis un fichier .md ou .txt.\n\n"
             L"Raccourcis\nCtrl+N / O / S : nouveau, ouvrir, enregistrer · Ctrl+Z / Y : annuler, rétablir · Ctrl+F : recherche\nCtrl+D : dupliquer · F2 : modifier · Suppr : supprimer · F : centrer · Ctrl+L : réorganiser · Origine : sujet central\n\n"
-            L"Portable\nMindMap.exe et session.mindmap suffisent. Aucun compte, installation ou dossier AppData."+memory).c_str(),
+            L"Accueil et sauvegardes\nChoisissez Nouvelle carte, Ouvrir ou un modèle. Les cartes récentes gardent leur emplacement. Les brouillons sont protégés jusqu’au premier enregistrement.\n"
+            L"Une carte enregistrée est sauvegardée automatiquement dans son fichier ; Fichier > Restaurer une version précédente retrouve les dix dernières versions conservées.\n"
+            L"L’ancienne session.mindmap se récupère depuis l’accueil : elle n’est plus rechargée comme une carte sans nom.\n\n"
+            L"Images et modèles\n+ Image / schéma ajoute une illustration intégrée au fichier ; vous pouvez aussi la glisser sur une idée sélectionnée. Fichier > Enregistrer cette carte comme modèle ajoute un modèle personnel à l’accueil.\n"
+            L"Imports / exports\nFreeMind (.mm), XMind (.xmind), Markdown et texte ; export PDF A4 paysage, PNG, SVG ou plan Markdown.\n\n"
+            L"Portable\nCopiez MindMap.exe, vos cartes et le dossier .mindmap-data ensemble pour conserver brouillons, modèles et versions. Aucun compte ni dossier AppData."+memory).c_str(),
             L"MindMap · prise en main",MB_OK|MB_ICONINFORMATION);
     }
     int popup(HMENU menu,POINT at){
@@ -780,10 +926,13 @@ public:
         HMENU menu=CreatePopupMenu();
         auto item=[&](UINT id,const wchar_t* text){AppendMenuW(menu,MF_STRING,id,text);};
         item(New,L"Nouvelle carte\tCtrl+N");item(Open,L"Ouvrir…\tCtrl+O");item(Save,L"Enregistrer\tCtrl+S");item(SaveAs,L"Enregistrer sous…\tCtrl+Maj+S");
+        item(Home,L"Retour à l’accueil");
         AppendMenuW(menu,MF_SEPARATOR,0,nullptr);
-        item(ImportOutline,L"Importer un plan (Markdown, texte)…\tCtrl+I");item(PasteOutline,L"Coller un plan sous l’idée choisie\tCtrl+Maj+V");item(CopyBranch,L"Copier la branche en texte\tCtrl+Maj+C");
+        item(ImportOutline,L"Importer (FreeMind, XMind, Markdown, texte)…\tCtrl+I");item(PasteOutline,L"Coller un plan sous l’idée choisie\tCtrl+Maj+V");item(CopyBranch,L"Copier la branche en texte\tCtrl+Maj+C");
+        item(SaveTemplate,L"Enregistrer cette carte comme modèle…");item(RestoreVersions,L"Restaurer une version précédente…");
+        if(current_file.empty()&&!draft_file.empty())item(DeleteDraft,L"Supprimer ce brouillon…");
         AppendMenuW(menu,MF_SEPARATOR,0,nullptr);
-        item(ExportPng,L"Exporter une image PNG…");item(ExportSvg,L"Exporter en SVG…");item(ExportMd,L"Exporter le plan Markdown…");
+        item(ExportPdf,L"Exporter en PDF (A4 paysage)…");item(ExportPng,L"Exporter une image PNG…");item(ExportSvg,L"Exporter en SVG…");item(ExportMd,L"Exporter le plan Markdown…");
         if(int result=popup(menu,at))command(result);
     }
     void view_menu(POINT at){
@@ -865,6 +1014,7 @@ public:
         status=L"Bravo, toutes les idées sont découvertes ! « Revoir seulement à revoir » pour un second passage.";repaint();
     }
     void navigate(int dx,int dy){
+        if(home)return;
         auto from=document::box(state,state.selected);long long best=0;double score=1e300;
         for(auto id:state.map->visible()){
             if(id==state.selected)continue;
@@ -878,6 +1028,41 @@ public:
     void command(int id){
         try {
             if(id==Help){help();return;}
+            if(id==BrowseTemplates||id==BrowseRecent){
+                HMENU menu=CreatePopupMenu();size_t size=id==BrowseTemplates?std::min<size_t>(100,custom_templates.size()):store.recent.size();
+                for(size_t i=0;i<size;++i)AppendMenuW(menu,MF_STRING,(id==BrowseTemplates?CustomTemplate0:Recent0)+i,
+                    (id==BrowseTemplates?wide(custom_templates[i].title):store.recent[i].filename().wstring()).c_str());
+                POINT at{};GetCursorPos(&at);if(auto action=popup(menu,at))command(action);return;
+            }
+            if(id==Home){go_home();return;}
+            if(id>=Recent0&&id<Recent0+12){if(static_cast<size_t>(id-Recent0)<store.recent.size()&&may_replace()){open_path(store.recent[id-Recent0]);fit();}return;}
+            if(id==BrowseDrafts){
+                if(!may_replace())return;auto path=dialog(false,L"Brouillon (*.mindmap)\0*.mindmap\0\0",L"mindmap",L"",store.data()/"drafts");if(path.empty())return;
+                auto content=document::decode(read_file(path));adopt(std::move(content));current_file.clear();disk_snapshot.clear();
+                draft_file=path.parent_path()==store.data()/"drafts"?path:fs::path{};loaded_document(true);fit();return;
+            }
+            if(id>=Draft0&&id<Draft0+20){
+                if(static_cast<size_t>(id-Draft0)>=draft_cards.size()||!may_replace())return;
+                auto path=draft_cards[id-Draft0].path;auto content=document::decode(read_file(path));adopt(std::move(content));current_file.clear();disk_snapshot.clear();draft_file=path;loaded_document(true);fit();return;
+            }
+            if((id>=Template0&&id<Template0+static_cast<int>(workspace::models().size()))||(id>=CustomTemplate0&&id<CustomTemplate0+100)){
+                if(!may_replace())return;document::State model;
+                if(id>=CustomTemplate0){if(static_cast<size_t>(id-CustomTemplate0)>=custom_templates.size())return;model=document::decode(read_file(custom_templates[id-CustomTemplate0].path));}
+                else model=document::from_outline(document::parse_outline(workspace::models()[id-Template0].outline),"Mon sujet");
+                auto name=ask_text(window,L"Nouvelle carte",L"Quel est le sujet de votre carte ?",wide(model.map->nodes.at(1)->title));if(!name)return;
+                auto label=document::trim(utf8(*name));if(label.empty())return;model.map->nodes.at(1)->title=document::clip_utf8(label,1024);
+                adopt(std::move(model));current_file.clear();draft_file.clear();disk_snapshot.clear();loaded_document(true);fit();return;
+            }
+            if(id==RecoverLegacy){
+                if(store.legacy_migrated||!may_replace())return;auto old=directory/L"session.mindmap";auto data=read_file(old);auto recovered=document::decode(data);
+                auto draft=store.data()/"drafts"/"legacy-session.mindmap";
+                if(fs::exists(draft))recovered=document::decode(read_file(draft));else store.draft(draft,document::encode(recovered));
+                store.legacy_migrated=true;try{store.save_index();}catch(...){store.legacy_migrated=false;refresh_home();throw;}
+                adopt(std::move(recovered));draft_file=draft;current_file.clear();disk_snapshot.clear();loaded_document(true);fit();
+                std::error_code error;fs::create_directories(store.data()/"legacy",error);if(!error)fs::rename(old,store.data()/"legacy"/"session-v2.mindmap",error);
+                status=error?L"Ancienne session récupérée · le fichier d’origine est conservé":L"Ancienne session récupérée · choisissez un nom avec Enregistrer";repaint();return;
+            }
+            if(home&&id!=New&&id!=Open&&id!=ImportOutline&&id!=ToggleDark)return;
             if(id==Apply){commit_edit();return;}
             if(!commit_edit())return;
             if(id==Save||id==SaveAs){save(id==SaveAs);return;}
@@ -894,28 +1079,46 @@ public:
                     status=revealed.size()==scope.size()?L"Aucune idée marquée « à revoir » : marquez-les avec 3 pendant la révision.":L"Seules les idées « à revoir » sont masquées.";
                     refresh_outline();repaint();return;
                 }
-                const bool allowed=id==Fit||id==ToggleNotes||id==Layout||id==LayoutRight||id==LayoutBalanced||id==LayoutRadial||(id>=Marker0&&id<Marker0+document::marker_count)||id==ExportPng||id==ExportSvg||id==ExportMd||id==CopyBranch;
+                const bool allowed=id==Fit||id==ToggleNotes||id==Layout||id==LayoutRight||id==LayoutBalanced||id==LayoutRadial||(id>=Marker0&&id<Marker0+document::marker_count)||id==ExportPng||id==ExportSvg||id==ExportMd||id==ExportPdf||id==CopyBranch;
                 if(!allowed){status=L"Terminez la révision (Échap) pour modifier la carte.";repaint();return;}
             }else if(id==RevealNext){return;}
             if(id==New||id==Open||id==ImportOutline){
                 if(!may_replace())return;
-                if(id==New){adopt(document::State{});state.map->nodes.at(1)->title="Mon sujet";current_file.clear();fit();}
+                if(id==New){command(Template0);return;}
                 else if(id==Open){
-                    auto path=dialog(false,L"Carte mentale (*.mindmap)\0*.mindmap\0\0",L"mindmap",L"");if(path.empty())return;
-                    open_path(path);fit();return;
+                    auto path=dialog(false,L"Cartes et plans\0*.mindmap;*.mm;*.xmind;*.md;*.txt\0Carte MindMap\0*.mindmap\0\0",L"mindmap",L"");if(path.empty())return;
+                    import_path(path);return;
                 } else {
-                    auto path=dialog(false,L"Plan Markdown ou texte (*.md;*.markdown;*.txt)\0*.md;*.markdown;*.txt\0Tous les fichiers\0*.*\0\0",L"md",L"");if(path.empty())return;
-                    adopt(document::from_outline(document::parse_outline(read_file(path)),utf8(path.stem().wstring())));
-                    current_file.clear();loaded_document(true);fit();status=L"Plan importé · "+std::to_wstring(state.map->nodes.size())+L" idées · Ctrl+S pour l’enregistrer";repaint();return;
+                    auto path=dialog(false,L"FreeMind, XMind, Markdown ou texte\0*.mm;*.xmind;*.md;*.markdown;*.txt\0\0",L"mm",L"");if(path.empty())return;
+                    import_path(path);return;
                 }
                 loaded_document(id==New);return;
             }
-            if(id==ExportPng||id==ExportSvg||id==ExportMd){
-                const wchar_t* ext=id==ExportPng?L"png":id==ExportSvg?L"svg":L"md";
-                const wchar_t* filter=id==ExportPng?L"Image PNG\0*.png\0\0":id==ExportSvg?L"Image SVG\0*.svg\0\0":L"Plan Markdown\0*.md\0\0";
+            if(id==SaveTemplate){auto label=ask_text(window,L"Enregistrer un modèle",L"Nom du modèle :",wide(state.map->nodes.at(1)->title));if(label){store.custom_model(utf8(*label),state);refresh_home();status=L"Modèle ajouté à l’accueil";repaint();}return;}
+            if(id==DeleteDraft){
+                if(!current_file.empty())return;
+                if(MessageBoxW(window,L"Supprimer définitivement ce brouillon ?\nLes cartes déjà enregistrées ne seront pas supprimées.",L"Supprimer le brouillon",MB_YESNO|MB_ICONWARNING)!=IDYES)return;
+                store.forget_draft(draft_file);draft_file.clear();dirty=false;autosave_pending=false;home=true;show_editors(false);refresh_home();update_caption();repaint();return;
+            }
+            if(id==RestoreVersions){
+                if(current_file.empty()){status=L"Enregistrez d’abord cette carte pour retrouver ses versions.";repaint();return;}
+                restore_paths=store.versions(current_file);if(restore_paths.empty()){status=L"Aucune version précédente pour cette carte.";repaint();return;}
+                HMENU menu=CreatePopupMenu();for(size_t i=0;i<restore_paths.size();++i)AppendMenuW(menu,MF_STRING,Restore0+i,restore_paths[i].stem().wstring().c_str());POINT at{};GetCursorPos(&at);if(auto action=popup(menu,at))command(action);return;
+            }
+            if(id>=Restore0&&id<Restore0+10){
+                if(static_cast<size_t>(id-Restore0)>=restore_paths.size()||current_file.empty())return;
+                auto restored=document::decode(read_file(restore_paths[id-Restore0]));auto data=document::encode(restored);
+                store.save_named(current_file,data,disk_snapshot.empty()?nullptr:&disk_snapshot,true);disk_snapshot=data;
+                adopt(std::move(restored));loaded_document(false);status=L"Version restaurée · la version remplacée est conservée dans les sauvegardes";repaint();return;
+            }
+            if(id==AddImage){auto path=dialog(false,L"Images PNG, JPEG, BMP\0*.png;*.jpg;*.jpeg;*.bmp\0\0",L"png",L"");if(!path.empty())attach_picture(path);return;}
+            if(id==RemoveImage){if(!state.pictures.count(state.selected))return;auto before=document::encode(state);state.pictures.erase(state.selected);picture_cache.erase(state.selected);document::layout(state);remember(std::move(before));changed(L"Image retirée");return;}
+            if(id==ExportPng||id==ExportSvg||id==ExportMd||id==ExportPdf){
+                const wchar_t* ext=id==ExportPng?L"png":id==ExportSvg?L"svg":id==ExportPdf?L"pdf":L"md";
+                const wchar_t* filter=id==ExportPng?L"Image PNG\0*.png\0\0":id==ExportSvg?L"Image SVG\0*.svg\0\0":id==ExportPdf?L"Document PDF\0*.pdf\0\0":L"Plan Markdown\0*.md\0\0";
                 std::wstring name=L"Ma carte.";name+=ext;
                 auto path=dialog(true,filter,ext,name.c_str());if(path.empty())return;
-                if(id==ExportPng)export_png(path);else atomic_write(path,id==ExportSvg?document::svg(state):document::markdown(state));
+                if(id==ExportPng)export_png(path);else if(id==ExportPdf)export_pdf(path);else atomic_write(path,id==ExportSvg?document::svg(state):document::markdown(state));
                 status=L"Export terminé · "+path.filename().wstring();repaint();return;
             }
             if(id==CopyBranch){set_clipboard_text(window,document::branch_markdown(state,state.selected));status=L"Branche copiée en texte : collez-la dans vos notes ou dans une autre carte (Ctrl+Maj+V).";repaint();return;}
@@ -985,7 +1188,10 @@ public:
             }
             else if(id==ReverseLink&&selected_link>=0){auto& link=state.links[static_cast<size_t>(selected_link)];std::swap(link.from,link.to);}
             else return;
-            if(document::encode(state)==before){repaint();return;}
+            std::string after;
+            try{after=document::encode(state);}
+            catch(...){adopt(document::decode(before));refresh_inspector();refresh_outline();repaint();throw;}
+            if(after==before){repaint();return;}
             remember(std::move(before));refresh_inspector();
             const bool keep_status=id>=Marker0&&id<Marker0+document::marker_count;
             if(keep_status)changed(status);else changed();
@@ -1020,7 +1226,7 @@ public:
                 auto n=state.map->nodes.at(row.second);state.pan_x=canvas.Width/2-n->x*state.zoom;state.pan_y=canvas.Height/2-n->y*state.zoom;autosave_pending=true;repaint();return;
             }
         }
-        if(!canvas.Contains(point)||!commit_edit())return;
+        if(home||!canvas.Contains(point)||!commit_edit())return;
         SetFocus(window);last_mouse=point;moved=false;tooltip=false;
         if(!middle&&minimap_rect.Contains(point)){minimap_drag=true;minimap_jump(point);SetCapture(window);return;}
         long long target=middle?0:hit(point);
@@ -1042,6 +1248,7 @@ public:
         SetCapture(window);
     }
     void mouse_move(PointF point){
+        if(home)return;
         pointer=point;
         if(!tracking_mouse){TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,window,0};tracking_mouse=TrackMouseEvent(&track);}
         if(minimap_drag){minimap_jump(point);return;}
@@ -1079,6 +1286,7 @@ public:
         dragging=false;panning=false;drag_before.clear();ReleaseCapture();repaint();
     }
     void wheel(PointF point,int delta){
+        if(home)return;
         if(point.X<canvas.X){outline_scroll-=delta/120*3;refresh_outline();repaint();return;}
         if(!canvas.Contains(point))return;
         double old=state.zoom;state.zoom=std::clamp(old*std::pow(1.12,delta/120.0),.2,3.0);
@@ -1153,6 +1361,21 @@ public:
             command(Marker0+3);
             capture(directory/L"test-revision.png");
             command(RevisionReview);command(RevisionStop);expect(!revising,"Fin de revision");
+            select(1);
+            {
+                Bitmap diagram(180,80,PixelFormat32bppARGB);
+                {Graphics drawn(&diagram);drawn.Clear(Color(255,255,255,255));Pen line(rgb(0x6274E8),3);drawn.DrawLine(&line,20,40,160,40);drawn.DrawRectangle(&line,5,15,55,50);drawn.DrawRectangle(&line,120,15,55,50);}
+                save_png(diagram,directory/L"test-schema.png");
+            }
+            attach_picture(directory/L"test-schema.png");
+            expect(state.pictures.count(1)&&document::decode(document::encode(state)).pictures==state.pictures,"Image non conservée");
+            expect(document::svg(state).find("data:image/png;base64,")!=std::string::npos,"Image absente du SVG");
+            export_pdf(directory/L"test-carte.pdf");expect(read_file(directory/L"test-carte.pdf").starts_with("%PDF-1.4"),"PDF invalide");
+            current_file=directory/L"test-carte.mindmap";disk_snapshot=read_file(current_file);expect(save(false),"Sauvegarde nommée impossible");
+            SetWindowTextW(title,L"Carte modifiée automatiquement");commit_edit();checkpoint();
+            expect(document::decode(read_file(current_file)).map->nodes.at(1)->title=="Carte modifiée automatiquement","Sauvegarde automatique dans le fichier d'origine");
+            expect(!store.versions(current_file).empty(),"Versions de secours absentes");
+            store.custom_model("Mon modèle de test",state);go_home();expect(home&&!IsWindowVisible(title),"Accueil incorrect");capture(directory/L"test-accueil.png");
             atomic_write(directory/L"smoke-test-report.json","{\"ok\":true,\"nodes\":"+std::to_string(state.map->nodes.size())+",\"links\":"+std::to_string(state.links.size())
                 +",\"gdi_before\":"+std::to_string(handles)+",\"gdi_after\":"+std::to_string(after)
                 +",\"history_steps\":"+std::to_string(history.steps())+",\"history_bytes\":"+std::to_string(history.bytes())+",\"history_raw_bytes\":"+std::to_string(history.raw_bytes())+"}\n");
@@ -1191,6 +1414,7 @@ LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wp,LPARAM lp){
             case WM_MOUSELEAVE:app->tracking_mouse=false;if(app->hovered||app->hovered_link>=0){app->hovered=0;app->hovered_link=-1;app->tooltip=false;app->repaint();}return 0;
             case WM_LBUTTONUP:case WM_MBUTTONUP:app->mouse_up(PointF(GET_X_LPARAM(lp)/app->scale,GET_Y_LPARAM(lp)/app->scale));return 0;
             case WM_LBUTTONDBLCLK:{
+                if(app->home)return 0;
                 PointF p(GET_X_LPARAM(lp)/app->scale,GET_Y_LPARAM(lp)/app->scale);
                 if(!app->canvas.Contains(p)||app->linking)return 0;
                 if(auto id=app->hit(p)){if(app->revising){app->reveal(id);}else{app->select(id,false);SetFocus(app->title);SendMessageW(app->title,EM_SETSEL,0,-1);}}
@@ -1198,6 +1422,7 @@ LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wp,LPARAM lp){
                 return 0;
             }
             case WM_CONTEXTMENU:{
+                if(app->home)return 0;
                 POINT point{GET_X_LPARAM(lp),GET_Y_LPARAM(lp)};
                 if(point.x==-1&&point.y==-1){auto b=document::box(app->state,app->state.selected);auto at=app->project(b.x,b.y);point={static_cast<LONG>(at.X*app->scale),static_cast<LONG>(at.Y*app->scale)};ClientToScreen(window,&point);app->node_menu(point);return 0;}
                 POINT client=point;ScreenToClient(window,&client);PointF at(client.x/app->scale,client.y/app->scale);
@@ -1216,12 +1441,12 @@ LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wp,LPARAM lp){
             case WM_CAPTURECHANGED:if(reinterpret_cast<HWND>(lp)!=window&&(app->dragging||app->panning||app->minimap_drag)){app->mouse_up(app->last_mouse);}return 0;
             case WM_DROPFILES:{
                 auto drop=reinterpret_cast<HDROP>(wp);wchar_t path[32768];bool have=DragQueryFileW(drop,0,path,32768)>0;DragFinish(drop);
-                if(have&&app->may_replace()){
+                if(have){
                     fs::path file(path);auto ext=lowercase(file.extension().wstring());
-                    if(ext==L".md"||ext==L".txt"||ext==L".markdown"){
-                        app->adopt(document::from_outline(document::parse_outline(read_file(file)),utf8(file.stem().wstring())));
-                        app->current_file.clear();app->loaded_document(true);app->fit();
-                    }else{app->open_path(file);app->fit();}
+                    if(ext==L".png"||ext==L".jpg"||ext==L".jpeg"||ext==L".bmp"){
+                        if(app->home){app->status=L"Ouvrez ou créez une carte pour y ajouter cette image.";app->repaint();}
+                        else if(!app->revising&&app->commit_edit())app->attach_picture(file);
+                    }else if(app->may_replace())app->import_path(file);
                 }
                 return 0;
             }
@@ -1274,7 +1499,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR,int show){
                             case 'Z':if(!editing)action=shift?ui::Redo:ui::Undo;break;case 'Y':if(!editing)action=ui::Redo;break;
                             case 'D':if(!editing)action=ui::Duplicate;break;case 'L':action=ui::Layout;break;
                             case 'C':if(shift&&!editing)action=ui::CopyBranch;break;case 'V':if(shift&&!editing)action=ui::PasteOutline;break;
-                            case 'F':SetFocus(app.search);SendMessageW(app.search,EM_SETSEL,0,-1);continue;
+                            case 'F':if(!app.home){SetFocus(app.search);SendMessageW(app.search,EM_SETSEL,0,-1);}continue;
                             case VK_RETURN:action=ui::Apply;break;}
                     }else if(!editing){
                         const WPARAM key=msg.wParam;
@@ -1285,7 +1510,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR,int show){
                             case VK_SPACE:if(app.revising)action=ui::RevealNext;break;case VK_HOME:action=ui::SelectRoot;break;
                             case VK_LEFT:app.navigate(-1,0);continue;case VK_RIGHT:app.navigate(1,0);continue;
                             case VK_UP:app.navigate(0,-1);continue;case VK_DOWN:app.navigate(0,1);continue;
-                            case VK_F2:if(!app.revising){SetFocus(app.title);SendMessageW(app.title,EM_SETSEL,0,-1);}continue;}
+                            case VK_F2:if(!app.home&&!app.revising){SetFocus(app.title);SendMessageW(app.title,EM_SETSEL,0,-1);}continue;}
                     }
                     if(msg.wParam==VK_ESCAPE){
                         if(editing){app.commit_edit();SetFocus(window);continue;}

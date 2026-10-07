@@ -8,3 +8,4 @@ __pycache__/
 # Session personnelle, recréée automatiquement
 session.mindmap
 session-invalide-*.mindmap
+.mindmap-data/
