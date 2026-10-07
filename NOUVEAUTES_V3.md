@@ -1,7 +1,10 @@
 # MindMap v3 — accueil et cartes portables
 
-Branche locale : `feature/portable-workspace`. La version 3 est implémentée
-dans les sources ; aucun nouvel exécutable Windows n'a été publié.
+Branche GitHub : `feature/portable-workspace`, [pull request #1](https://github.com/moidefr/mindmap-portable/pull/1).
+La version 3 est compilée et testée sous Windows dans GitHub Actions.
+L'exécutable est disponible dans l'artefact `MindMap-Windows` de la
+[compilation validée](https://github.com/moidefr/mindmap-portable/actions/runs/37618950562).
+Les exécutables de la release v2 restent ceux de la version précédente.
 
 ## Le nouveau parcours
 
@@ -66,17 +69,20 @@ depuis FreeMind et XMind JSON.
 - Le découpage UTF-8 reste compatible avec les 30 656 cas de comparaison
   de la première optimisation. Le cœur py2x généré n'a pas été modifié.
 
-## Validation Windows restante
+## Validation Windows effectuée
 
-Cet environnement Linux n'a ni MinGW, ni CMake, ni Wine. L'application Win32
-n'a donc pas été compilée et l'interface n'a pas été lancée ici.
+La compilation MinGW et les deux suites CTest passent sur le runner Windows
+de GitHub Actions. Le smoke-test de l'interface passe également. La cible
+Windows 10 est déclarée dans CMake pour activer les API de compression et DPI.
 
 Le smoke-test Windows a été étendu : image ajoutée, export PDF, sauvegarde
 automatique dans le fichier d'origine, versions, modèle personnel et accueil.
 Le workflow `.github/workflows/windows.yml` prépare une compilation MinGW,
 les tests et ce smoke-test dans un dossier isolé, puis conserve l'exécutable,
-les captures et les rapports en artefacts. Ce workflow n'a pas encore été
-exécuté : les changements restent locaux.
+les captures et les rapports en artefacts. L'exécution liée ci-dessus valide
+le commit `4deae8e021a6cf64624477515e50b257ff8f70fa`.
+Une vérification manuelle des interactions et de l'affichage sur différentes
+résolutions reste utile ; le smoke-test couvre un parcours automatique.
 
 Miniz 3.1.0 est fourni dans `sources/vendor/miniz/`, avec sa licence MIT.
 Seul son décompresseur DEFLATE est compilé ; l'application reste sans
