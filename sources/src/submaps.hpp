@@ -131,6 +131,23 @@ inline std::vector<Entry> hierarchy(const fs::path& root) {
     return out;
 }
 
+// Map files in the folder created for `root`'s sub-maps (<root folder>/<root name>/**) that no map of the hierarchy points to.
+inline std::vector<fs::path> orphans(const fs::path& root) {
+    std::vector<fs::path> out;
+    auto folder = folder_of(root) / root.stem();
+    std::error_code error;
+    if (!fs::is_directory(folder, error)) return out;
+    const auto used = hierarchy(root);
+    for (fs::recursive_directory_iterator it(folder, error), end; !error && it != end; it.increment(error)) {
+        if (!it->is_regular_file() || it->path().extension() != ".mindmap") continue;
+        bool known = false;
+        for (const auto& entry : used) if (same(entry.file, it->path())) { known = true; break; }
+        if (!known) out.push_back(it->path());
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
 // The whole hierarchy as one Markdown outline: each sub-map is inlined under the idea that holds it.
 inline void deep_bullets(const fs::path& file, const document::State& state, long long id, size_t depth, std::string& out, std::vector<fs::path>& chain) {
     auto n = state.map->nodes.at(id);
@@ -158,6 +175,77 @@ inline std::string deep_markdown(const fs::path& file) {
     if (!state.map->nodes.at(1)->note.empty()) out += state.map->nodes.at(1)->note + "\n\n";
     std::vector<fs::path> chain{file};
     for (auto child : state.map->nodes.at(1)->children) deep_bullets(file, state, child, 0, out, chain);
+    return out;
+}
+// Lowercase, accent-free form used to search: "Révolution" and "revolution" match each other.
+inline std::string fold(const std::string& s) {
+    static const char* latin1[32] = {"a","a","a","a","a","a","ae","c","e","e","e","e","i","i","i","i","d","n","o","o","o","o","o","x","o","u","u","u","u","y","th","ss"};
+    std::string out;
+    for (size_t i = 0; i < s.size();) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        unsigned cp = c; size_t n = 1;
+        if (c >= 0xF0) { cp = c & 7; n = 4; } else if (c >= 0xE0) { cp = c & 15; n = 3; } else if (c >= 0xC0) { cp = c & 31; n = 2; } else if (c >= 0x80) { ++i; continue; }
+        for (size_t k = 1; k < n && i + k < s.size(); ++k) cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 63);
+        const std::string original = s.substr(i, n);
+        i += n;
+        if (cp < 128) out += static_cast<char>(std::tolower(static_cast<int>(cp)));
+        else if (cp == 0xFF) out += 'y';
+        else if (cp >= 0xC0 && cp <= 0xFF) out += latin1[(cp >= 0xE0 ? cp - 0xE0 : cp - 0xC0)];
+        else if (cp == 0x152 || cp == 0x153) out += "oe";
+        else if (cp == 0x2018 || cp == 0x2019) out += '\'';
+        else out += original;
+    }
+    return out;
+}
+
+struct Hit {
+    fs::path file;
+    long long id = 0;
+    std::string title, excerpt, path;  // path: « Histoire › Thème 1 › Chapitre 1 »
+};
+// Every idea of the hierarchy below `root` whose title or note contains all the words of `query`.
+inline std::vector<Hit> search(const fs::path& root, const std::string& query, size_t limit = 100) {
+    std::vector<std::string> words;
+    { std::istringstream in(fold(query)); std::string w; while (in >> w) words.push_back(w); }
+    std::vector<Hit> out;
+    if (words.empty()) return out;
+    std::vector<std::string> titles;
+    for (const auto& entry : hierarchy(root)) {
+        if (entry.status != Status::Ok) continue;
+        titles.resize(static_cast<size_t>(entry.depth) + 1);
+        titles[static_cast<size_t>(entry.depth)] = entry.title;
+        std::string path;
+        for (size_t i = 0; i <= static_cast<size_t>(entry.depth); ++i) path += (i ? " › " : "") + titles[i];
+        document::State state;
+        try { state = load(entry.file); } catch (...) { continue; }
+        for (long long id : state.map->descendants(1)) {
+            auto n = state.map->nodes.at(id);
+            const auto title = fold(n->title), note = fold(n->note);
+            bool all = true, in_note = false;
+            for (const auto& w : words) {
+                const bool t = title.find(w) != std::string::npos, k = note.find(w) != std::string::npos;
+                all &= t || k; in_note |= !t && k;
+            }
+            if (!all) continue;
+            Hit hit{entry.file, id, n->title, "", path};
+            if (in_note) hit.excerpt = document::clip_utf8(document::single_line(n->note), 90);
+            out.push_back(std::move(hit));
+            if (out.size() >= limit) return out;
+        }
+    }
+    return out;
+}
+// The maps to cross to reach `target` from `root` (root first); each entry's `via` is the idea of the previous map holding it.
+inline std::vector<Entry> chain(const fs::path& root, const fs::path& target) {
+    const auto list = hierarchy(root);
+    int found = -1;
+    for (size_t i = 0; i < list.size() && found < 0; ++i) if (list[i].status == Status::Ok && same(list[i].file, target)) found = static_cast<int>(i);
+    std::vector<Entry> out;
+    if (found < 0) return out;
+    int depth = list[static_cast<size_t>(found)].depth;
+    out.push_back(list[static_cast<size_t>(found)]);
+    for (int i = found - 1; i >= 0 && depth > 0; --i) if (list[static_cast<size_t>(i)].depth == depth - 1) { out.push_back(list[static_cast<size_t>(i)]); --depth; }
+    std::reverse(out.begin(), out.end());
     return out;
 }
 } // namespace submap

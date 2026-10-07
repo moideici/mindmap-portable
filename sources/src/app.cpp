@@ -16,7 +16,7 @@
 #include "history.hpp"
 #include "workspace.hpp"
 #include "imports.hpp"
-#include "submaps.hpp"
+#include "courses.hpp"
 #include "pdf.hpp"
 
 using namespace Gdiplus;
@@ -27,11 +27,11 @@ constexpr UINT autosave_timer = 1, smoke_timer = 2;
 enum Command { New=100, Open, Save, SaveAs, Add, Sibling, Delete, Duplicate, Undo, Redo, Layout, Fit,
     Collapse, ExportPng, ExportSvg, ExportMd, Apply, Help, ImportOutline, PasteOutline, CopyBranch,
     LayoutRight, LayoutBalanced, LayoutRadial, ToggleNotes, ToggleMinimap, ToggleDark, LinkMode,
-    Revision, RevealNext, RevealAll, RevisionRestart, RevisionReview, RevisionStop, CustomColor,
+    CustomColor, GlobalSearch, ExportCourse, ExportNemo,
     DeleteLink, ReverseLink, SelectRoot, Home, AddImage, RemoveImage, ExportPdf, SaveTemplate, RestoreVersions, RecoverLegacy, BrowseDrafts, DeleteDraft,
     OpenSubmap, CreateSubmap, DetachSubmap, UpSubmap,
     Color0=150, Marker0=170, LinkLabel0=190, LinkRow0=220, LinkRowDelete0=240,
-    BrowseTemplates=500, BrowseRecent=501, Template0=600, Recent0=700, Draft0=720, CustomTemplate0=800, Restore0=900 };
+    Jump0=1000, BrowseTemplates=500, BrowseRecent=501, Template0=600, Recent0=700, Draft0=720, CustomTemplate0=800, Restore0=900 };
 constexpr int search_id=401, title_id=402, note_id=403;
 constexpr int link_label_custom=8, link_label_none=7;
 std::wstring wide(const std::string& text) {
@@ -216,11 +216,12 @@ public:
     double minimap_scale=1, minimap_left=0, minimap_top=0;
     int outline_scroll=0, selected_link=-1, hovered_link=-1;
     bool updating=false, pending_edit=false, dirty=false, autosave_pending=false, dragging=false, panning=false, minimap_drag=false, moved=false, smoke=false;
-    bool linking=false, revising=false, tooltip=false, tracking_mouse=false, navigating=false;
+    bool linking=false, tooltip=false, tracking_mouse=false, navigating=false;
     std::vector<Crumb> trail;
+    std::vector<std::pair<fs::path,long long>> jumps;  // targets of the open "Cartes" / search-results menu
+    fs::path jump_root;
     ULONGLONG retry_save_at=0, hover_since=0;
-    long long drag_id=0, link_from=0, hovered=0, revision_root=1;
-    std::set<long long> scope, revealed;
+    long long drag_id=0, link_from=0, hovered=0;
     PointF last_mouse, pointer;
     std::string drag_before;
     ULONGLONG edit_time=0;
@@ -260,7 +261,6 @@ public:
         loaded.dark=state.dark;loaded.minimap=state.minimap;
         state=std::move(loaded);
         if(selected_link>=static_cast<int>(state.links.size()))selected_link=-1;
-        if(revising){std::erase_if(revealed,[&](long long id){return !state.map->nodes.count(id);});}
     }
     void remember(std::string before) { history.remember(before); }
     void changed(const std::wstring& message=L"Modifications en cours de sauvegarde…") {
@@ -276,7 +276,6 @@ public:
         if(dirty) caption+=L" *";
         SetWindowTextW(window,caption.c_str());
     }
-    bool masked(long long id) const { return revising && scope.count(id) && !revealed.count(id); }
     void refresh_outline(){
         outline_ids.clear();matches.clear();
         const auto query=lowercase(text_of(search));
@@ -284,7 +283,7 @@ public:
         for(auto id:ids){
             auto n=state.map->nodes.at(id);
             if(query.empty()) outline_ids.push_back(id);
-            else if(!masked(id) && lowercase(wide(n->title+"\n"+n->note)).find(query)!=std::wstring::npos){outline_ids.push_back(id);matches.insert(id);}
+            else if(lowercase(wide(n->title+"\n"+n->note)).find(query)!=std::wstring::npos){outline_ids.push_back(id);matches.insert(id);}
         }
         int shown=std::max(1,static_cast<int>((height-237)/36));
         outline_scroll=std::clamp(outline_scroll,0,std::max(0,static_cast<int>(outline_ids.size())-shown));
@@ -300,10 +299,20 @@ public:
         if(text_of(note)!=notes)SetWindowTextW(note,notes.c_str());
         pending_edit=false; updating=false;
     }
+    // The idea and the central subject of its sub-map share one title: renaming either one renames the other.
+    void push_title_to_submap(long long id,const std::string& title){
+        auto it=state.submaps.find(id);
+        if(it==state.submaps.end()||current_file.empty())return;
+        try{
+            auto file=submap::resolve(current_file,it->second);
+            if(!fs::exists(file))return;
+            auto child=submap::load(file);
+            if(child.map->nodes.at(1)->title==title)return;
+            child.map->nodes.at(1)->title=title;submap::store(file,child);
+        }catch(const std::exception&){status=L"Le titre de la sous-carte n’a pas pu être mis à jour (fichier inaccessible).";}
+    }
     bool commit_edit(){
         if(home)return true;
-        // In revision mode the editors are hidden and keep stale text: never write it back.
-        if(revising){pending_edit=false;return true;}
         // Read actual controls even when a programmatic edit does not emit EN_CHANGE.
         auto caption=text_of(title), notes=text_of(note);
         std::wstring normalized;
@@ -317,8 +326,10 @@ public:
         auto current=state.map->nodes.at(state.selected);
         if(t==current->title && n==current->note){pending_edit=false;return true;}
         std::string before=document::encode(state);
-        const bool resized=current->title!=t||(state.show_notes&&current->note!=n);
+        const bool retitled=current->title!=t;
+        const bool resized=retitled||(state.show_notes&&current->note!=n);
         state.map->rename(state.selected,t,n);
+        if(retitled)push_title_to_submap(state.selected,t);
         // Sizes follow the text: re-run the layout only when a box may have grown or shrunk.
         if(resized&&!dragging)document::layout(state);
         remember(std::move(before)); pending_edit=false; changed(); return true;
@@ -378,7 +389,7 @@ public:
     void create_demo(){
         state=document::State{};
         state.map=std::make_shared<MindMap>("Mon prochain chapitre");
-        state.map->rename(1,"Mon prochain chapitre","Carte d’exemple modifiable. Tab ajoute une idée, L relie deux idées, R lance la révision.");
+        state.map->rename(1,"Mon prochain chapitre","Carte d’exemple modifiable. Tab ajoute une idée, L relie deux idées, O ouvre ou crée une sous-carte.");
         auto a=state.map->add(1,"Comprendre");
         auto b=state.map->add(1,"Retenir");
         auto c=state.map->add(1,"S’entraîner");
@@ -389,7 +400,7 @@ public:
         state.map->rename(dates,"Dates et repères","Ajoutez ici une explication, une date ou un exemple.\n\nDouble-cliquez sur une idée pour la modifier.");
         auto people=state.map->add(b,"Personnages clés");
         auto questions=state.map->add(c,"Questions possibles");
-        state.map->rename(questions,"Questions possibles","Mode révision (R) : les idées sont masquées, découvrez-les une à une avec Espace.");
+        state.map->rename(questions,"Questions possibles","Une idée peut contenir une sous-carte : sélectionnez-la puis appuyez sur O.");
         state.map->add(c,"Un exemple par idée");
         state.markers[dates]=5;state.markers[ideas]=1;state.markers[people]=3;
         document::add_link(state,people,causes,"influence");
@@ -488,15 +499,13 @@ public:
             auto corner=at({b.left(),b.top()});
             RectF r(corner.X,corner.Y,static_cast<REAL>(b.w*zoom),static_cast<REAL>(b.h*zoom));
             if(r.GetRight()+30*z<area.X || r.X-30*z>area.GetRight() || r.GetBottom()+30*z<area.Y || r.Y-30*z>area.GetBottom())continue;
-            const bool hidden=interactive&&masked(id), root=id==1;
+            const bool root=id==1;
             const bool chosen=interactive&&id==doc.selected&&selected_link<0;
             if(interactive&&matches.count(id))panel(g,RectF(r.X-6*z,r.Y-6*z,r.Width+12*z,r.Height+12*z),Color(110,t.highlight.GetR(),t.highlight.GetG(),t.highlight.GetB()),Color(0,0,0,0),16*z);
             panel(g,RectF(r.X+1*z,r.Y+3*z,r.Width,r.Height),Color(doc.dark&&interactive?60:15,10,20,45),Color(0,0,0,0),12*z);
-            Color fill=root&&!hidden?rgb(n->color):t.node;
-            panel(g,r,fill,chosen?t.selection:rgb(n->color,hidden?140:190),12*z,chosen?3*z:1.5f*z,hidden);
-            if(hidden){
-                text(g,L"?",r,22*z,rgb(n->color),Bold|Center);
-            }else{
+            Color fill=root?rgb(n->color):t.node;
+            panel(g,r,fill,chosen?t.selection:rgb(n->color,190),12*z,chosen?3*z:1.5f*z);
+            {
                 if(!root){SolidBrush accent(rgb(n->color));g.FillRectangle(&accent,r.X+10*z,r.Y+14*z,3*z,r.Height-28*z);}
                 const auto& m=boxes.at(id).metrics;
                 const REAL top=r.Y+static_cast<REAL>((b.h-m.title_h-m.note_h-m.picture_h)/2*zoom);
@@ -567,7 +576,7 @@ public:
         state.pan_x=canvas.Width/2-x*state.zoom;state.pan_y=canvas.Height/2-y*state.zoom;autosave_pending=true;repaint();
     }
     void draw_tooltip(Graphics& g){
-        if(!tooltip||!hovered||dragging||panning||linking||!state.map->nodes.count(hovered)||masked(hovered))return;
+        if(!tooltip||!hovered||dragging||panning||linking||!state.map->nodes.count(hovered))return;
         auto n=state.map->nodes.at(hovered);
         if(n->note.empty())return;
         const Theme& t=colors();
@@ -644,29 +653,6 @@ public:
         if(state.pictures.count(state.selected))button(g,x+198,493,44,L"×",RemoveImage,false,false,true,26);
         button(g,x,height-84,242,L"Appliquer les modifications",Apply,true);
     }
-    void paint_revision(Graphics& g){
-        const Theme& t=colors();const REAL x=width-270;
-        text(g,L"MODE RÉVISION",RectF(x,140,242,25),11,rgb(0xE07B24),Bold);
-        size_t shown=0;for(auto id:scope)shown+=revealed.count(id)>0;
-        text(g,L"Idées découvertes : "+std::to_wstring(shown)+L" / "+std::to_wstring(scope.size()),RectF(x,168,242,24),13,t.text,Bold);
-        RectF bar(x,196,242,8);panel(g,bar,t.button,Color(0,0,0,0),4);
-        if(!scope.empty()&&shown)panel(g,RectF(x,196,242.0f*shown/scope.size(),8),rgb(0x2E9E5B),Color(0,0,0,0),4);
-        button(g,x,218,242,L"Révéler la suivante  (Espace)",RevealNext,true);
-        button(g,x,258,119,L"Tout révéler",RevealAll);button(g,x+123,258,119,L"Recommencer",RevisionRestart);
-        button(g,x,298,242,L"Revoir seulement « à revoir »",RevisionReview);
-        button(g,x,338,242,L"Terminer la révision  (Échap)",RevisionStop);
-        auto n=state.map->nodes.at(state.selected);
-        text(g,L"Idée sélectionnée",RectF(x,384,242,22),12,t.subtle,Bold);
-        if(masked(state.selected))text(g,L"Encore masquée : essayez de la retrouver, puis cliquez dessus ou appuyez sur Espace.",RectF(x,408,242,80),13,t.text,Wrap|Top);
-        else{
-            text(g,wide(n->title),RectF(x,408,242,48),15,t.title,Bold|Wrap|Top);
-            text(g,n->note.empty()?L"(pas de note)":wide(n->note),RectF(x,458,242,std::max(20.0f,height-470-130)),13,t.text,Wrap|Top);
-        }
-        text(g,L"Votre auto-évaluation",RectF(x,height-126,242,22),12,t.subtle,Bold);
-        const int marker=document::marker_of(state,state.selected);
-        button(g,x,height-100,119,L"✓ Acquis  (2)",Marker0+2,false,marker==2);
-        button(g,x+123,height-100,119,L"? À revoir  (3)",Marker0+3,false,marker==3);
-    }
     void paint_home(Graphics& g){
         const auto& t=colors();buttons.clear();outline_hits.clear();minimap_rect=RectF(0,0,0,0);
         text(g,L"MindMap",RectF(44,28,300,45),30,t.title,Bold);
@@ -739,9 +725,9 @@ public:
         button(g,550,79,92,L"Affichage ▾",-1);
         button(g,650,79,64,L"Centrer",Fit);
         button(g,722,79,64,L"Relier",LinkMode,false,linking);
-        button(g,794,79,70,L"Réviser",Revision,false,revising);
-        button(g,872,79,86,L"Enregistrer",Save);
-        button(g,964,79,70,L"Accueil",Home);
+        button(g,794,79,86,L"Enregistrer",Save);
+        button(g,886,79,70,L"Accueil",Home);
+        button(g,964,79,82,L"Cartes ▾",-2);
         panel(g,RectF(16,132,210,height-177),t.panel,t.border,12);
         text(g,L"PLAN DE LA CARTE",RectF(28,133,186,18),10,t.subtle,Bold);
         outline_hits.clear();
@@ -757,7 +743,7 @@ public:
                 const auto& info=document::marker_info(marker);SolidBrush b(rgb(info.color));g.FillEllipse(&b,28+indent,y+9,14.0f,14.0f);
                 text(g,wide(info.glyph),RectF(28+indent,y+9,14,14),9,Color(255,255,255,255),Bold|Center|Symbol);
             }else{SolidBrush color(rgb(n->color));g.FillEllipse(&color,32+indent,y+13,6.0f,6.0f);}
-            text(g,masked(id)?L"• • •":wide(n->title),RectF(47+indent,y,161-indent,33),12,t.text);
+            text(g,wide(n->title),RectF(47+indent,y,161-indent,33),12,t.text);
         }
         if(outline_ids.empty())text(g,L"Aucun résultat",RectF(32,206,176,32),13,t.subtle);
         GraphicsState clip=g.Save();g.SetClip(canvas);
@@ -775,8 +761,7 @@ public:
         draw_tooltip(g);
         g.Restore(clip);
         const wchar_t* hint=linking?L"Cliquez sur l’idée à relier   ·   Échap : annuler"
-            :revising?L"Espace : révéler la suivante   ·   2 : acquis   ·   3 : à revoir   ·   Échap : terminer"
-            :L"Tab : enfant   Entrée : même niveau   Flèches : naviguer   1-5 : repères   L : relier   R : réviser";
+            :L"Tab : enfant   Entrée : même niveau   Flèches : naviguer   1-5 : repères   L : relier   O : sous-carte";
         text(g,hint,RectF(canvas.X+12,canvas.GetBottom()-26,canvas.Width-24,24),10,t.subtle,Center);
         if(!trail.empty()){
             std::wstring path;for(const auto& c:trail)path+=c.title+L"  ›  ";path+=wide(state.map->nodes.at(1)->title);
@@ -784,7 +769,7 @@ public:
             text(g,path,RectF(canvas.X+122,canvas.Y+8,std::max(60.0f,canvas.Width-132),28),12,t.subtle);
         }
         panel(g,RectF(width-286,132,270,height-177),t.panel,t.border,12);
-        if(revising)paint_revision(g);else paint_inspector(g);
+        paint_inspector(g);
         std::wstring count=std::to_wstring(state.map->nodes.size())+L" idées  •  "+std::to_wstring(state.links.size())+L" liens  •  "+std::to_wstring(static_cast<int>(state.zoom*100))+L" %";
         text(g,count,RectF(22,height-31,230,25),11,t.subtle);
         text(g,status,RectF(265,height-31,width-285,25),11,t.subtle);
@@ -808,7 +793,9 @@ public:
         auto path=current_file;
         if(choose||path.empty()){
             auto name=wide(state.map->nodes.at(1)->title);for(auto& ch:name)if(wcschr(L"<>:\"/\\|?*",ch)||ch<32)ch=L'_';
-            while(!name.empty()&&(name.back()==L'.'||name.back()==L' '))name.pop_back();if(name.empty())name=L"Ma carte";name=name.substr(0,120)+L".mindmap";
+            while(!name.empty()&&(name.back()==L'.'||name.back()==L' '))name.pop_back();
+            if(name.empty())name=L"Ma carte";
+            name=name.substr(0,120)+L".mindmap";
             path=dialog(true,L"Carte mentale (*.mindmap)\0*.mindmap\0\0",L"mindmap",name.c_str());
         }
         if(path.empty())return false;
@@ -824,7 +811,7 @@ public:
         checkpoint();return true;
     }
     void loaded_document(bool is_dirty){
-        stop_revision();linking=false;selected_link=-1;if(!navigating)trail.clear();
+        linking=false;selected_link=-1;if(!navigating)trail.clear();
         updating=true;SetWindowTextW(search,L"");updating=false;outline_scroll=0;retry_save_at=0;
         home=false;show_editors(true);picture_cache.clear();
         history.clear();dirty=is_dirty;autosave_pending=true;refresh_inspector();refresh_outline();update_caption();repaint();
@@ -848,12 +835,14 @@ public:
         auto data=document::encode(state);
         if(current_file.empty()){
             if(!dirty){autosave_pending=false;return;}
-            if(draft_file.empty())draft_file=store.new_draft();store.draft(draft_file,data);
+            if(draft_file.empty())draft_file=store.new_draft();
+            store.draft(draft_file,data);
             status=L"Brouillon protégé · Enregistrer pour choisir un nom et un emplacement";
         }else{
             try{store.save_named(current_file,data,disk_snapshot.empty()?nullptr:&disk_snapshot,false);}
             catch(const std::exception&){
-                if(draft_file.empty())draft_file=store.new_draft();store.draft(draft_file,data);throw;
+                if(draft_file.empty())draft_file=store.new_draft();
+                store.draft(draft_file,data);throw;
             }
             disk_snapshot=data;dirty=false;status=L"Enregistré automatiquement · "+current_file.wstring();
             store.forget_draft(draft_file);draft_file.clear();
@@ -867,20 +856,121 @@ public:
         if(!may_replace())return;
         if(current_file.empty()){status=L"Enregistrez d’abord cette carte pour ouvrir ses sous-cartes.";repaint();return;}
         auto child=submap::resolve(current_file,it->second);
-        if(!fs::exists(child))throw std::runtime_error("Sous-carte introuvable : "+workspace::path_text(child)+"\nElle a peut-être été déplacée ou supprimée : détachez-la ou rétablissez le fichier.");
+        if(!fs::exists(child)){repair_submap(child);return;}
         Crumb crumb{current_file,wide(state.map->nodes.at(1)->title),state.selected};
         navigating=true;
         try{open_path(child);}catch(...){navigating=false;throw;}
         navigating=false;trail.push_back(std::move(crumb));fit();update_caption();repaint();
     }
+    // Topmost map of the hierarchy being explored: searches and the map list start from there.
+    fs::path hierarchy_root() const { return trail.empty()?current_file:trail.front().file; }
+    // Opens any map of the hierarchy below `root` directly, rebuilding the breadcrumb to it, and selects an idea.
+    void jump_to(const fs::path& root,const fs::path& file,long long node){
+        if(!may_replace())return;
+        auto way=submap::chain(root,file);
+        if(way.empty())throw std::runtime_error("Cette carte ne fait plus partie de la hiérarchie : "+workspace::path_text(file));
+        std::vector<Crumb> next;
+        for(size_t i=0;i+1<way.size();++i)next.push_back({way[i].file,wide(way[i].title),way[i+1].via});
+        if(!submap::same(file,current_file)){
+            navigating=true;
+            try{open_path(file);}catch(...){navigating=false;throw;}
+            navigating=false;fit();
+        }
+        trail=std::move(next);
+        if(state.map->nodes.count(node)){select(node);ensure_visible(node);}
+        update_caption();repaint();
+    }
+    std::wstring clipped(const std::wstring& text,size_t limit) const { return text.size()>limit?text.substr(0,limit-1)+L"…":text; }
+    // "Cartes" menu: search everywhere, then every map of the hierarchy (indented) to jump to.
+    void cards_menu(POINT at){
+        if(home||!commit_edit())return;
+        if(current_file.empty()){status=L"Enregistrez d’abord cette carte pour explorer ses sous-cartes.";repaint();return;}
+        checkpoint();
+        jump_root=hierarchy_root();jumps.clear();
+        HMENU menu=CreatePopupMenu();
+        AppendMenuW(menu,MF_STRING,GlobalSearch,L"Rechercher dans toutes les cartes…\tCtrl+Maj+F");
+        AppendMenuW(menu,MF_SEPARATOR,0,nullptr);
+        for(const auto& entry:submap::hierarchy(jump_root)){
+            if(jumps.size()>=200)break;
+            std::wstring label=std::wstring(static_cast<size_t>(entry.depth)*3,L' ')+(entry.depth?L"▸ ":L"")+clipped(wide(entry.title),60);
+            if(entry.status!=submap::Status::Ok)label+=L"  ⚠ "+wide(submap::status_name(entry.status));
+            UINT flags=MF_STRING|(entry.status==submap::Status::Ok?0:MF_GRAYED)|(submap::same(entry.file,current_file)?MF_CHECKED:0);
+            jumps.emplace_back(entry.file,1);AppendMenuW(menu,flags,Jump0+jumps.size()-1,label.c_str());
+        }
+        if(int result=popup(menu,at))command(result);
+    }
+    void show_hits(const std::vector<submap::Hit>& hits,POINT at){
+        jump_root=hierarchy_root();jumps.clear();
+        HMENU menu=CreatePopupMenu();
+        for(const auto& hit:hits){
+            if(jumps.size()>=30)break;
+            jumps.emplace_back(hit.file,hit.id);
+            AppendMenuW(menu,MF_STRING,Jump0+jumps.size()-1,clipped(wide(hit.path+"  ›  "+hit.title),100).c_str());
+        }
+        if(int result=popup(menu,at))command(result);
+    }
+    void global_search(){
+        if(current_file.empty()){status=L"Enregistrez d’abord cette carte pour chercher dans ses sous-cartes.";repaint();return;}
+        if(!may_replace())return;
+        auto answer=ask_text(window,L"Rechercher dans toutes les cartes",L"Mots à chercher dans les idées et les notes de cette carte et de toutes ses sous-cartes :",L"");
+        if(!answer)return;
+        auto query=document::trim(utf8(*answer));if(query.empty())return;
+        auto hits=submap::search(hierarchy_root(),query,30);
+        if(hits.empty()){status=L"Aucun résultat pour « "+wide(query)+L" » dans toutes les cartes.";repaint();return;}
+        status=std::to_wstring(hits.size())+L" résultat(s) pour « "+wide(query)+L" »";repaint();
+        POINT at{};GetCursorPos(&at);show_hits(hits,at);
+    }
+    // Whole hierarchy of the current map as one Markdown course (sections per sub-map level).
+    void export_course_to(const fs::path& path){
+        atomic_write(path,course::markdown(current_file));
+        status=L"Cours complet exporté · "+path.filename().wstring();repaint();
+    }
+    // Nemo reads the course files of one folder: the first export asks where it is, then the choice is remembered.
+    void export_nemo(){
+        if(current_file.empty()){status=L"Enregistrez d’abord cette carte pour l’exporter vers Nemo.";repaint();return;}
+        checkpoint();
+        auto folder=nemo::courses_folder(directory);
+        auto suggested=nemo::course_file(folder.empty()?fs::path():folder,state).filename().wstring();
+        auto path=dialog(true,L"Cours Markdown (*.md)\0*.md\0\0",L"md",suggested.c_str(),folder);
+        if(path.empty())return;
+        nemo::set_courses_folder(directory,path.parent_path());
+        export_course_to(path);
+        status=L"Cours exporté pour Nemo · "+path.wstring()+L" · il sera lu à la prochaine synchronisation des cours";repaint();
+    }
+    // The file of a sub-map was moved or deleted: let the user point to its new place, or detach it.
+    void repair_submap(const fs::path& missing){
+        status=L"Sous-carte introuvable : "+missing.wstring();repaint();
+        if(smoke)return;
+        std::wstring message=L"Le fichier de cette sous-carte est introuvable :\n"+missing.wstring()+L"\n\nOui : le retrouver (choisir son nouvel emplacement)\nNon : détacher la sous-carte de cette idée\nAnnuler : ne rien faire";
+        const int answer=MessageBoxW(window,message.c_str(),L"Sous-carte introuvable",MB_YESNOCANCEL|MB_ICONWARNING);
+        if(answer==IDNO){command(DetachSubmap);return;}
+        if(answer!=IDYES)return;
+        auto chosen=dialog(false,L"Carte MindMap (*.mindmap)\0*.mindmap\0\0",L"mindmap",L"",current_file.parent_path());
+        if(chosen.empty())return;
+        auto previous=state.submaps.at(state.selected);
+        auto before=document::encode(state);
+        state.submaps.erase(state.selected);
+        try{submap::attach(state,current_file,state.selected,chosen);}
+        catch(...){state.submaps[state.selected]=previous;throw;}
+        remember(std::move(before));changed(L"Sous-carte retrouvée · "+chosen.filename().wstring());
+    }
     void up_submap(){
         if(trail.empty()){status=L"Cette carte n’est pas une sous-carte ouverte depuis une autre.";repaint();return;}
         if(!may_replace())return;
         auto crumb=trail.back();trail.pop_back();
+        const auto child_title=state.map->nodes.at(1)->title;
         navigating=true;
         try{open_path(crumb.file);}catch(...){navigating=false;trail.push_back(crumb);throw;}
         navigating=false;
-        if(state.map->nodes.count(crumb.node)){select(crumb.node);ensure_visible(crumb.node);}
+        if(state.map->nodes.count(crumb.node)){
+            select(crumb.node);ensure_visible(crumb.node);
+            auto holder=state.map->nodes.at(crumb.node);
+            if(holder->title!=child_title){
+                auto before=document::encode(state);
+                state.map->rename(crumb.node,child_title,holder->note);document::layout(state);
+                remember(std::move(before));refresh_inspector();changed(L"Titre de l’idée mis à jour d’après la sous-carte");
+            }
+        }
         update_caption();repaint();
     }
     void create_submap(){
@@ -894,22 +984,26 @@ public:
     }
     void show_editors(bool show){for(HWND control:{search,title,note})ShowWindow(control,show?SW_SHOW:SW_HIDE);}
     void refresh_home(){draft_cards=store.cards("drafts");custom_templates=store.cards("templates");}
-    void go_home(){if(!may_replace())return;stop_revision();trail.clear();home=true;autosave_pending=false;show_editors(false);refresh_home();update_caption();repaint();}
+    void go_home(){if(!may_replace())return;trail.clear();home=true;autosave_pending=false;show_editors(false);refresh_home();update_caption();repaint();}
     static std::string bitmap_bytes(Bitmap& image,const wchar_t* mime){
         UINT count=0,size=0;GetImageEncodersSize(&count,&size);std::vector<BYTE> codecs(size);
         auto* info=reinterpret_cast<ImageCodecInfo*>(codecs.data());GetImageEncoders(count,size,info);CLSID encoder{};bool found=false;
         for(UINT i=0;i<count;++i)if(wcscmp(info[i].MimeType,mime)==0){encoder=info[i].Clsid;found=true;break;}
-        if(!found)throw std::runtime_error("Encodeur d'image indisponible");PictureStream stream;
+        if(!found)throw std::runtime_error("Encodeur d'image indisponible");
+        PictureStream stream;
         if(CreateStreamOnHGlobal(nullptr,TRUE,&stream.value)!=S_OK||image.Save(stream.value,&encoder,nullptr)!=Ok)throw std::runtime_error("Encodage d'image impossible");
         STATSTG stat{};if(stream.value->Stat(&stat,STATFLAG_NONAME)!=S_OK||stat.cbSize.QuadPart>64*1024*1024)throw std::runtime_error("Image exportée trop grande");
         std::string bytes(static_cast<size_t>(stat.cbSize.QuadPart),'\0');LARGE_INTEGER start{};ULONG read=0;
-        if(stream.value->Seek(start,STREAM_SEEK_SET,nullptr)!=S_OK||stream.value->Read(bytes.data(),static_cast<ULONG>(bytes.size()),&read)!=S_OK||read!=bytes.size())throw std::runtime_error("Lecture d'image impossible");return bytes;
+        if(stream.value->Seek(start,STREAM_SEEK_SET,nullptr)!=S_OK||stream.value->Read(bytes.data(),static_cast<ULONG>(bytes.size()),&read)!=S_OK||read!=bytes.size())throw std::runtime_error("Lecture d'image impossible");
+        return bytes;
     }
     Bitmap& picture(long long id,const document::Picture& source){
         auto it=picture_cache.find(id);if(it!=picture_cache.end()&&it->second->encoded==source.data)return *it->second->bitmap;
-        if(picture_cache.size()>=16)picture_cache.clear();auto cached=std::make_unique<CachedPicture>();
+        if(picture_cache.size()>=16)picture_cache.clear();
+        auto cached=std::make_unique<CachedPicture>();
         auto bytes=document::unbase64(source.data);
-        if(CreateStreamOnHGlobal(nullptr,TRUE,&cached->stream.value)!=S_OK)throw std::runtime_error("Image inaccessible");ULONG written=0;
+        if(CreateStreamOnHGlobal(nullptr,TRUE,&cached->stream.value)!=S_OK)throw std::runtime_error("Image inaccessible");
+        ULONG written=0;
         if(cached->stream.value->Write(bytes.data(),static_cast<ULONG>(bytes.size()),&written)!=S_OK||written!=bytes.size())throw std::runtime_error("Image inaccessible");
         LARGE_INTEGER start{};cached->stream.value->Seek(start,STREAM_SEEK_SET,nullptr);
         cached->bitmap.reset(Bitmap::FromStream(cached->stream.value));
@@ -958,7 +1052,7 @@ public:
             L"Touches 1 à 5 : repères ★ important, ✓ acquis, ? à revoir, ! attention, ⚑ repère clé. 0 retire le repère.\n\n"
             L"Afficher\nAffichage ▾ : disposition équilibrée, radiale ou vers la droite ; aperçu des notes (N) ; mini-carte (M) ; thème sombre.\n"
             L"Survolez une idée pour lire toute sa note. La recherche surligne les idées trouvées.\n\n"
-            L"Réviser\nR : les idées sont masquées. Espace les découvre une à une, 2 / 3 : acquis / à revoir, Échap : terminer.\n\n"
+            L"Sous-cartes\nO ouvre (ou crée) la sous-carte de l’idée, Retour arrière remonte. Cartes ▾ liste toutes les cartes de la hiérarchie ; Ctrl+Maj+F cherche dans toutes les cartes.\nFichier > Exporter pour Nemo écrit le cours complet en Markdown dans le dossier des cours.\n\n"
             L"Plans\nCtrl+Maj+C copie une branche en texte ; Ctrl+Maj+V colle un plan (Markdown, liste ou texte indenté) sous l’idée choisie.\nFichier > Importer un plan crée une carte depuis un fichier .md ou .txt.\n\n"
             L"Raccourcis\nCtrl+N / O / S : nouveau, ouvrir, enregistrer · Ctrl+Z / Y : annuler, rétablir · Ctrl+F : recherche\nCtrl+D : dupliquer · F2 : modifier · Suppr : supprimer · F : centrer · Ctrl+L : réorganiser · Origine : sujet central\n\n"
             L"Accueil et sauvegardes\nChoisissez Nouvelle carte, Ouvrir ou un modèle. Les cartes récentes gardent leur emplacement. Les brouillons sont protégés jusqu’au premier enregistrement.\n"
@@ -984,6 +1078,7 @@ public:
         if(current_file.empty()&&!draft_file.empty())item(DeleteDraft,L"Supprimer ce brouillon…");
         AppendMenuW(menu,MF_SEPARATOR,0,nullptr);
         item(ExportPdf,L"Exporter en PDF (A4 paysage)…");item(ExportPng,L"Exporter une image PNG…");item(ExportSvg,L"Exporter en SVG…");item(ExportMd,L"Exporter le plan Markdown…");
+        item(ExportCourse,L"Exporter le cours complet (sous-cartes comprises)…");item(ExportNemo,L"Exporter pour Nemo…");
         if(int result=popup(menu,at))command(result);
     }
     void view_menu(POINT at){
@@ -1033,40 +1128,6 @@ public:
         if(parent==-1)parent=1;
         state.selected=state.map->add(parent,"Nouvelle idée");document::layout(state);
     }
-    // --- Revision mode: ideas of the chosen branch are masked and revealed one by one ---
-    void start_revision(){
-        if(!commit_edit())return;
-        linking=false;selected_link=-1;
-        revision_root=state.selected;scope.clear();revealed.clear();
-        for(auto id:state.map->descendants(revision_root))if(id!=revision_root)scope.insert(id);
-        if(scope.empty()){status=L"Choisissez une idée qui a des sous-idées (ou le sujet central) pour réviser.";repaint();return;}
-        bool closed=false;for(auto id:scope)closed|=state.map->nodes.at(id)->collapsed;
-        if(state.map->nodes.at(revision_root)->collapsed||closed){
-            auto before=document::encode(state);
-            for(auto id:state.map->descendants(revision_root))state.map->nodes.at(id)->collapsed=false;
-            document::layout(state);remember(std::move(before));changed();
-        }
-        revising=true;
-        ShowWindow(title,SW_HIDE);ShowWindow(note,SW_HIDE);SetFocus(window);
-        status=L"Révision : retrouvez chaque idée avant de la révéler.";refresh_outline();fit();
-    }
-    void stop_revision(){
-        if(!revising)return;
-        revising=false;scope.clear();revealed.clear();
-        refresh_inspector();ShowWindow(title,SW_SHOW);ShowWindow(note,SW_SHOW);
-        status=L"Révision terminée";refresh_outline();repaint();
-    }
-    void reveal(long long id){ revealed.insert(id);state.selected=id;refresh_outline();ensure_visible(id); }
-    void reveal_next(){
-        // Breadth-first: an idea is proposed once its parent is known, from the centre outwards.
-        std::deque<long long> queue{revision_root};
-        while(!queue.empty()){
-            auto id=queue.front();queue.pop_front();
-            if(masked(id)){reveal(id);size_t shown=0;for(auto s:scope)shown+=revealed.count(s)>0;status=L"Révision · "+std::to_wstring(shown)+L" / "+std::to_wstring(scope.size());return;}
-            for(auto child:state.map->nodes.at(id)->children)queue.push_back(child);
-        }
-        status=L"Bravo, toutes les idées sont découvertes ! « Revoir seulement à revoir » pour un second passage.";repaint();
-    }
     void navigate(int dx,int dy){
         if(home)return;
         auto from=document::box(state,state.selected);long long best=0;double score=1e300;
@@ -1079,187 +1140,207 @@ public:
         }
         if(best){select(best);ensure_visible(best);}
     }
+    // Home screen, recent cards, drafts, templates and legacy recovery. Returns true when the command was handled.
+    bool open_flow(int id){
+        if(id==Help){help();return true;}
+        if(id==BrowseTemplates||id==BrowseRecent){
+            HMENU menu=CreatePopupMenu();size_t size=id==BrowseTemplates?std::min<size_t>(100,custom_templates.size()):store.recent.size();
+            for(size_t i=0;i<size;++i)AppendMenuW(menu,MF_STRING,(id==BrowseTemplates?CustomTemplate0:Recent0)+i,
+                (id==BrowseTemplates?wide(custom_templates[i].title):store.recent[i].filename().wstring()).c_str());
+            POINT at{};GetCursorPos(&at);if(auto action=popup(menu,at))command(action);return true;
+        }
+        if(id==Home){go_home();return true;}
+        if(id>=Recent0&&id<Recent0+12){if(static_cast<size_t>(id-Recent0)<store.recent.size()&&may_replace()){open_path(store.recent[id-Recent0]);fit();}return true;}
+        if(id==BrowseDrafts){
+            if(!may_replace())return true;
+            auto path=dialog(false,L"Brouillon (*.mindmap)\0*.mindmap\0\0",L"mindmap",L"",store.data()/"drafts");if(path.empty())return true;
+            auto content=document::decode(read_file(path));adopt(std::move(content));current_file.clear();disk_snapshot.clear();
+            draft_file=path.parent_path()==store.data()/"drafts"?path:fs::path{};loaded_document(true);fit();return true;
+        }
+        if(id>=Draft0&&id<Draft0+20){
+            if(static_cast<size_t>(id-Draft0)>=draft_cards.size()||!may_replace())return true;
+            auto path=draft_cards[id-Draft0].path;auto content=document::decode(read_file(path));adopt(std::move(content));current_file.clear();disk_snapshot.clear();draft_file=path;loaded_document(true);fit();return true;
+        }
+        if((id>=Template0&&id<Template0+static_cast<int>(workspace::models().size()))||(id>=CustomTemplate0&&id<CustomTemplate0+100)){
+            if(!may_replace())return true;
+            document::State model;
+            if(id>=CustomTemplate0){if(static_cast<size_t>(id-CustomTemplate0)>=custom_templates.size())return true;model=document::decode(read_file(custom_templates[id-CustomTemplate0].path));}
+            else model=document::from_outline(document::parse_outline(workspace::models()[id-Template0].outline),"Mon sujet");
+            auto name=ask_text(window,L"Nouvelle carte",L"Quel est le sujet de votre carte ?",wide(model.map->nodes.at(1)->title));if(!name)return true;
+            auto label=document::trim(utf8(*name));if(label.empty())return true;model.map->nodes.at(1)->title=document::clip_utf8(label,1024);
+            adopt(std::move(model));current_file.clear();draft_file.clear();disk_snapshot.clear();loaded_document(true);fit();return true;
+        }
+        if(id==RecoverLegacy){
+            if(store.legacy_migrated||!may_replace())return true;
+            auto old=directory/L"session.mindmap";auto data=read_file(old);auto recovered=document::decode(data);
+            auto draft=store.data()/"drafts"/"legacy-session.mindmap";
+            if(fs::exists(draft))recovered=document::decode(read_file(draft));else store.draft(draft,document::encode(recovered));
+            store.legacy_migrated=true;try{store.save_index();}catch(...){store.legacy_migrated=false;refresh_home();throw;}
+            adopt(std::move(recovered));draft_file=draft;current_file.clear();disk_snapshot.clear();loaded_document(true);fit();
+            std::error_code error;fs::create_directories(store.data()/"legacy",error);if(!error)fs::rename(old,store.data()/"legacy"/"session-v2.mindmap",error);
+            status=error?L"Ancienne session récupérée · le fichier d’origine est conservé":L"Ancienne session récupérée · choisissez un nom avec Enregistrer";repaint();return true;
+        }
+        return false;
+    }
+    // New, open, import, templates, versions, images, exports and clipboard. Returns true when handled.
+    bool file_flow(int id){
+        if(id==New||id==Open||id==ImportOutline){
+            if(!may_replace())return true;
+            if(id==New){command(Template0);return true;}
+            else if(id==Open){
+                auto path=dialog(false,L"Cartes et plans\0*.mindmap;*.mm;*.xmind;*.md;*.txt\0Carte MindMap\0*.mindmap\0\0",L"mindmap",L"");if(path.empty())return true;
+                import_path(path);return true;
+            } else {
+                auto path=dialog(false,L"FreeMind, XMind, Markdown ou texte\0*.mm;*.xmind;*.md;*.markdown;*.txt\0\0",L"mm",L"");if(path.empty())return true;
+                import_path(path);return true;
+            }
+            loaded_document(id==New);return true;
+        }
+        if(id==SaveTemplate){auto label=ask_text(window,L"Enregistrer un modèle",L"Nom du modèle :",wide(state.map->nodes.at(1)->title));if(label){store.custom_model(utf8(*label),state);refresh_home();status=L"Modèle ajouté à l’accueil";repaint();}return true;}
+        if(id==DeleteDraft){
+            if(!current_file.empty())return true;
+            if(MessageBoxW(window,L"Supprimer définitivement ce brouillon ?\nLes cartes déjà enregistrées ne seront pas supprimées.",L"Supprimer le brouillon",MB_YESNO|MB_ICONWARNING)!=IDYES)return true;
+            store.forget_draft(draft_file);draft_file.clear();dirty=false;autosave_pending=false;home=true;show_editors(false);refresh_home();update_caption();repaint();return true;
+        }
+        if(id==RestoreVersions){
+            if(current_file.empty()){status=L"Enregistrez d’abord cette carte pour retrouver ses versions.";repaint();return true;}
+            restore_paths=store.versions(current_file);if(restore_paths.empty()){status=L"Aucune version précédente pour cette carte.";repaint();return true;}
+            HMENU menu=CreatePopupMenu();for(size_t i=0;i<restore_paths.size();++i)AppendMenuW(menu,MF_STRING,Restore0+i,restore_paths[i].stem().wstring().c_str());POINT at{};GetCursorPos(&at);if(auto action=popup(menu,at))command(action);return true;
+        }
+        if(id>=Restore0&&id<Restore0+10){
+            if(static_cast<size_t>(id-Restore0)>=restore_paths.size()||current_file.empty())return true;
+            auto restored=document::decode(read_file(restore_paths[id-Restore0]));auto data=document::encode(restored);
+            store.save_named(current_file,data,disk_snapshot.empty()?nullptr:&disk_snapshot,true);disk_snapshot=data;
+            adopt(std::move(restored));loaded_document(false);status=L"Version restaurée · la version remplacée est conservée dans les sauvegardes";repaint();return true;
+        }
+        if(id==AddImage){auto path=dialog(false,L"Images PNG, JPEG, BMP\0*.png;*.jpg;*.jpeg;*.bmp\0\0",L"png",L"");if(!path.empty())attach_picture(path);return true;}
+        if(id==RemoveImage){if(!state.pictures.count(state.selected))return true;auto before=document::encode(state);state.pictures.erase(state.selected);picture_cache.erase(state.selected);document::layout(state);remember(std::move(before));changed(L"Image retirée");return true;}
+        if(id==ExportPng||id==ExportSvg||id==ExportMd||id==ExportPdf){
+            const wchar_t* ext=id==ExportPng?L"png":id==ExportSvg?L"svg":id==ExportPdf?L"pdf":L"md";
+            const wchar_t* filter=id==ExportPng?L"Image PNG\0*.png\0\0":id==ExportSvg?L"Image SVG\0*.svg\0\0":id==ExportPdf?L"Document PDF\0*.pdf\0\0":L"Plan Markdown\0*.md\0\0";
+            std::wstring name=L"Ma carte.";name+=ext;
+            auto path=dialog(true,filter,ext,name.c_str());if(path.empty())return true;
+            if(id==ExportPng)export_png(path);else if(id==ExportPdf)export_pdf(path);else atomic_write(path,id==ExportSvg?document::svg(state):document::markdown(state));
+            status=L"Export terminé · "+path.filename().wstring();repaint();return true;
+        }
+        if(id==CopyBranch){set_clipboard_text(window,document::branch_markdown(state,state.selected));status=L"Branche copiée en texte : collez-la dans vos notes ou dans une autre carte (Ctrl+Maj+V).";repaint();return true;}
+        return false;
+    }
+    // Navigation, sub-maps, link mode, undo/redo. These never change the map by themselves. Returns true when handled.
+    bool view_flow(int id){
+        if(id==GlobalSearch){global_search();return true;}
+        if(id>=Jump0&&id<Jump0+300){
+            if(static_cast<size_t>(id-Jump0)<jumps.size())jump_to(jump_root,jumps[id-Jump0].first,jumps[id-Jump0].second);
+            return true;
+        }
+        if(id==ExportNemo){export_nemo();return true;}
+        if(id==ExportCourse){
+            if(current_file.empty()){status=L"Enregistrez d’abord cette carte pour exporter son cours complet.";repaint();return true;}
+            checkpoint();
+            auto path=dialog(true,L"Cours Markdown (*.md)\0*.md\0\0",L"md",L"Mon cours.md");if(path.empty())return true;
+            export_course_to(path);return true;
+        }
+        if(id==Fit){fit();return true;}
+        if(id==SelectRoot){select(1);ensure_visible(1);return true;}
+        if(id==OpenSubmap){open_submap();return true;}
+        if(id==UpSubmap){up_submap();return true;}
+        if(id==CreateSubmap){create_submap();return true;}
+        if(id==DetachSubmap){
+            if(!state.submaps.count(state.selected))return true;
+            auto before=document::encode(state);state.submaps.erase(state.selected);remember(std::move(before));
+            changed(L"Sous-carte détachée · le fichier de la sous-carte est conservé");return true;
+        }
+        if(id==LinkMode){
+            linking=!linking;link_from=state.selected;selected_link=-1;
+            status=linking?L"Cliquez sur l’idée à relier à « "+wide(state.map->nodes.at(link_from)->title)+L" »":L"Liaison annulée";repaint();return true;
+        }
+        if(id==Undo||id==Redo){
+            if(!(id==Undo?history.can_undo():history.can_redo())){status=L"Aucune modification à "+std::wstring(id==Undo?L"annuler":L"rétablir");repaint();return true;}
+            auto current=document::encode(state);
+            adopt(document::decode(id==Undo?history.undo(current):history.redo(current)));
+            refresh_inspector();changed();return true;
+        }
+        if(id>=LinkRow0&&id<LinkRow0+3){
+            auto row=static_cast<size_t>(id-LinkRow0);if(row>=link_rows.size())return true;
+            selected_link=static_cast<int>(link_rows[row]);repaint();
+            POINT at;GetCursorPos(&at);link_menu(at);return true;
+        }
+        return false;
+    }
+    // Commands that modify the map: one snapshot before, one history entry after.
+    void edit_flow(int id){
+        std::string before=document::encode(state);
+        if(id==Add||id==Sibling){
+            add_new_node(id==Sibling);
+        } else if(id==Delete||id==DeleteLink||(id>=LinkRowDelete0&&id<LinkRowDelete0+3)){
+            if(id>=LinkRowDelete0){auto row=static_cast<size_t>(id-LinkRowDelete0);if(row>=link_rows.size())return;selected_link=static_cast<int>(link_rows[row]);}
+            if(selected_link>=0){state.links.erase(state.links.begin()+selected_link);selected_link=-1;}
+            else if(id==DeleteLink)return;
+            else {
+                if(state.selected==1){status=L"Le sujet central se renomme ; il ne se supprime pas.";repaint();return;}
+                size_t count=state.map->descendants(state.selected).size();
+                if(count>1&&!smoke){std::wstring msg=L"Supprimer cette branche et ses "+std::to_wstring(count-1)+L" sous-idées ?\nCtrl+Z permet de revenir en arrière.";if(MessageBoxW(window,msg.c_str(),L"Supprimer une branche",MB_YESNO|MB_ICONQUESTION)!=IDYES)return;}
+                state.selected=state.map->remove(state.selected);document::layout(state);
+            }
+        } else if(id==Duplicate){
+            if(state.map->next_id>=2147481647)throw std::runtime_error("Identifiants epuises : creez une nouvelle carte");
+            state.selected=document::duplicate_branch(state,state.selected);document::layout(state);
+        } else if(id==PasteOutline){
+            if(state.map->next_id>=2147479647)throw std::runtime_error("Identifiants epuises : creez une nouvelle carte");
+            auto created=document::apply_outline(state,state.selected,document::parse_outline(clipboard_text(window)));
+            document::layout(state);state.selected=created.front();
+            remember(std::move(before));refresh_inspector();changed(std::to_wstring(created.size())+L" idées ajoutées depuis le presse-papiers");ensure_visible(state.selected);return;
+        }
+        else if(id==Layout){document::layout(state);}
+        else if(id==LayoutRight||id==LayoutBalanced||id==LayoutRadial){state.layout=id==LayoutRight?document::LayoutRight:id==LayoutBalanced?document::LayoutBalanced:document::LayoutRadial;document::layout(state);}
+        else if(id==ToggleNotes){state.show_notes=!state.show_notes;document::layout(state);}
+        else if(id==Collapse){if(state.map->nodes.at(state.selected)->children.empty())return;state.map->toggle(state.selected);document::layout(state);}
+        else if(id>=Color0&&id<Color0+6){state.map->set_color(state.selected,palette[id-Color0],true);}
+        else if(id==CustomColor){
+            auto current=state.map->nodes.at(state.selected)->color;
+            CHOOSECOLORW pick{};pick.lStructSize=sizeof(pick);pick.hwndOwner=window;pick.lpCustColors=custom_colors;
+            pick.rgbResult=RGB(current>>16&255,current>>8&255,current&255);pick.Flags=CC_FULLOPEN|CC_RGBINIT;
+            if(!ChooseColorW(&pick))return;
+            state.map->set_color(state.selected,(GetRValue(pick.rgbResult)<<16)|(GetGValue(pick.rgbResult)<<8)|GetBValue(pick.rgbResult),true);
+        }
+        else if(id>=Marker0&&id<Marker0+document::marker_count){
+            const int marker=id-Marker0;
+            if(document::marker_of(state,state.selected)==marker||marker==0)state.markers.erase(state.selected);else state.markers[state.selected]=marker;
+            status=L"Repère : "+wide(document::marker_info(document::marker_of(state,state.selected)).name);
+        }
+        else if(id>=LinkLabel0&&id<=LinkLabel0+link_label_custom&&selected_link>=0){
+            auto& link=state.links[static_cast<size_t>(selected_link)];
+            if(id==LinkLabel0+link_label_custom){
+                auto answer=ask_text(window,L"Libellé du lien",L"Texte affiché sur le lien (200 caractères au plus) :",wide(link.label));
+                if(!answer)return;
+                link.label=document::clip_utf8(document::trim(utf8(*answer)),document::max_link_label);
+            } else link.label=id==LinkLabel0+link_label_none?"":document::link_presets[id-LinkLabel0];
+        }
+        else if(id==ReverseLink&&selected_link>=0){auto& link=state.links[static_cast<size_t>(selected_link)];std::swap(link.from,link.to);}
+        else return;
+        std::string after;
+        try{after=document::encode(state);}
+        catch(...){adopt(document::decode(before));refresh_inspector();refresh_outline();repaint();throw;}
+        if(after==before){repaint();return;}
+        remember(std::move(before));refresh_inspector();
+        const bool keep_status=id>=Marker0&&id<Marker0+document::marker_count;
+        if(keep_status)changed(status);else changed();
+        if(id==Layout||id==LayoutRight||id==LayoutBalanced||id==LayoutRadial)fit();
+        if(id==Add||id==Sibling||id==Duplicate){ensure_visible(state.selected);}
+        if(id==Add||id==Sibling){SetFocus(title);SendMessageW(title,EM_SETSEL,0,-1);}
+    }
     void command(int id){
         try {
-            if(id==Help){help();return;}
-            if(id==BrowseTemplates||id==BrowseRecent){
-                HMENU menu=CreatePopupMenu();size_t size=id==BrowseTemplates?std::min<size_t>(100,custom_templates.size()):store.recent.size();
-                for(size_t i=0;i<size;++i)AppendMenuW(menu,MF_STRING,(id==BrowseTemplates?CustomTemplate0:Recent0)+i,
-                    (id==BrowseTemplates?wide(custom_templates[i].title):store.recent[i].filename().wstring()).c_str());
-                POINT at{};GetCursorPos(&at);if(auto action=popup(menu,at))command(action);return;
-            }
-            if(id==Home){go_home();return;}
-            if(id>=Recent0&&id<Recent0+12){if(static_cast<size_t>(id-Recent0)<store.recent.size()&&may_replace()){open_path(store.recent[id-Recent0]);fit();}return;}
-            if(id==BrowseDrafts){
-                if(!may_replace())return;auto path=dialog(false,L"Brouillon (*.mindmap)\0*.mindmap\0\0",L"mindmap",L"",store.data()/"drafts");if(path.empty())return;
-                auto content=document::decode(read_file(path));adopt(std::move(content));current_file.clear();disk_snapshot.clear();
-                draft_file=path.parent_path()==store.data()/"drafts"?path:fs::path{};loaded_document(true);fit();return;
-            }
-            if(id>=Draft0&&id<Draft0+20){
-                if(static_cast<size_t>(id-Draft0)>=draft_cards.size()||!may_replace())return;
-                auto path=draft_cards[id-Draft0].path;auto content=document::decode(read_file(path));adopt(std::move(content));current_file.clear();disk_snapshot.clear();draft_file=path;loaded_document(true);fit();return;
-            }
-            if((id>=Template0&&id<Template0+static_cast<int>(workspace::models().size()))||(id>=CustomTemplate0&&id<CustomTemplate0+100)){
-                if(!may_replace())return;document::State model;
-                if(id>=CustomTemplate0){if(static_cast<size_t>(id-CustomTemplate0)>=custom_templates.size())return;model=document::decode(read_file(custom_templates[id-CustomTemplate0].path));}
-                else model=document::from_outline(document::parse_outline(workspace::models()[id-Template0].outline),"Mon sujet");
-                auto name=ask_text(window,L"Nouvelle carte",L"Quel est le sujet de votre carte ?",wide(model.map->nodes.at(1)->title));if(!name)return;
-                auto label=document::trim(utf8(*name));if(label.empty())return;model.map->nodes.at(1)->title=document::clip_utf8(label,1024);
-                adopt(std::move(model));current_file.clear();draft_file.clear();disk_snapshot.clear();loaded_document(true);fit();return;
-            }
-            if(id==RecoverLegacy){
-                if(store.legacy_migrated||!may_replace())return;auto old=directory/L"session.mindmap";auto data=read_file(old);auto recovered=document::decode(data);
-                auto draft=store.data()/"drafts"/"legacy-session.mindmap";
-                if(fs::exists(draft))recovered=document::decode(read_file(draft));else store.draft(draft,document::encode(recovered));
-                store.legacy_migrated=true;try{store.save_index();}catch(...){store.legacy_migrated=false;refresh_home();throw;}
-                adopt(std::move(recovered));draft_file=draft;current_file.clear();disk_snapshot.clear();loaded_document(true);fit();
-                std::error_code error;fs::create_directories(store.data()/"legacy",error);if(!error)fs::rename(old,store.data()/"legacy"/"session-v2.mindmap",error);
-                status=error?L"Ancienne session récupérée · le fichier d’origine est conservé":L"Ancienne session récupérée · choisissez un nom avec Enregistrer";repaint();return;
-            }
+            if(open_flow(id))return;
             if(home&&id!=New&&id!=Open&&id!=ImportOutline&&id!=ToggleDark)return;
             if(id==Apply){commit_edit();return;}
             if(!commit_edit())return;
             if(id==Save||id==SaveAs){save(id==SaveAs);return;}
             if(id==ToggleDark){state.dark=!state.dark;apply_theme();autosave_pending=true;return;}
             if(id==ToggleMinimap){state.minimap=!state.minimap;autosave_pending=true;repaint();return;}
-            if(id==Revision){if(revising)stop_revision();else start_revision();return;}
-            if(id==RevisionStop){stop_revision();return;}
-            if(revising){
-                if(id==RevealNext){reveal_next();return;}
-                if(id==RevealAll){revealed=scope;refresh_outline();repaint();return;}
-                if(id==RevisionRestart){revealed.clear();refresh_outline();repaint();return;}
-                if(id==RevisionReview){
-                    revealed=scope;for(auto s:scope)if(document::marker_of(state,s)==3)revealed.erase(s);
-                    status=revealed.size()==scope.size()?L"Aucune idée marquée « à revoir » : marquez-les avec 3 pendant la révision.":L"Seules les idées « à revoir » sont masquées.";
-                    refresh_outline();repaint();return;
-                }
-                const bool allowed=id==Fit||id==ToggleNotes||id==Layout||id==LayoutRight||id==LayoutBalanced||id==LayoutRadial||(id>=Marker0&&id<Marker0+document::marker_count)||id==ExportPng||id==ExportSvg||id==ExportMd||id==ExportPdf||id==CopyBranch;
-                if(!allowed){status=L"Terminez la révision (Échap) pour modifier la carte.";repaint();return;}
-            }else if(id==RevealNext){return;}
-            if(id==New||id==Open||id==ImportOutline){
-                if(!may_replace())return;
-                if(id==New){command(Template0);return;}
-                else if(id==Open){
-                    auto path=dialog(false,L"Cartes et plans\0*.mindmap;*.mm;*.xmind;*.md;*.txt\0Carte MindMap\0*.mindmap\0\0",L"mindmap",L"");if(path.empty())return;
-                    import_path(path);return;
-                } else {
-                    auto path=dialog(false,L"FreeMind, XMind, Markdown ou texte\0*.mm;*.xmind;*.md;*.markdown;*.txt\0\0",L"mm",L"");if(path.empty())return;
-                    import_path(path);return;
-                }
-                loaded_document(id==New);return;
-            }
-            if(id==SaveTemplate){auto label=ask_text(window,L"Enregistrer un modèle",L"Nom du modèle :",wide(state.map->nodes.at(1)->title));if(label){store.custom_model(utf8(*label),state);refresh_home();status=L"Modèle ajouté à l’accueil";repaint();}return;}
-            if(id==DeleteDraft){
-                if(!current_file.empty())return;
-                if(MessageBoxW(window,L"Supprimer définitivement ce brouillon ?\nLes cartes déjà enregistrées ne seront pas supprimées.",L"Supprimer le brouillon",MB_YESNO|MB_ICONWARNING)!=IDYES)return;
-                store.forget_draft(draft_file);draft_file.clear();dirty=false;autosave_pending=false;home=true;show_editors(false);refresh_home();update_caption();repaint();return;
-            }
-            if(id==RestoreVersions){
-                if(current_file.empty()){status=L"Enregistrez d’abord cette carte pour retrouver ses versions.";repaint();return;}
-                restore_paths=store.versions(current_file);if(restore_paths.empty()){status=L"Aucune version précédente pour cette carte.";repaint();return;}
-                HMENU menu=CreatePopupMenu();for(size_t i=0;i<restore_paths.size();++i)AppendMenuW(menu,MF_STRING,Restore0+i,restore_paths[i].stem().wstring().c_str());POINT at{};GetCursorPos(&at);if(auto action=popup(menu,at))command(action);return;
-            }
-            if(id>=Restore0&&id<Restore0+10){
-                if(static_cast<size_t>(id-Restore0)>=restore_paths.size()||current_file.empty())return;
-                auto restored=document::decode(read_file(restore_paths[id-Restore0]));auto data=document::encode(restored);
-                store.save_named(current_file,data,disk_snapshot.empty()?nullptr:&disk_snapshot,true);disk_snapshot=data;
-                adopt(std::move(restored));loaded_document(false);status=L"Version restaurée · la version remplacée est conservée dans les sauvegardes";repaint();return;
-            }
-            if(id==AddImage){auto path=dialog(false,L"Images PNG, JPEG, BMP\0*.png;*.jpg;*.jpeg;*.bmp\0\0",L"png",L"");if(!path.empty())attach_picture(path);return;}
-            if(id==RemoveImage){if(!state.pictures.count(state.selected))return;auto before=document::encode(state);state.pictures.erase(state.selected);picture_cache.erase(state.selected);document::layout(state);remember(std::move(before));changed(L"Image retirée");return;}
-            if(id==ExportPng||id==ExportSvg||id==ExportMd||id==ExportPdf){
-                const wchar_t* ext=id==ExportPng?L"png":id==ExportSvg?L"svg":id==ExportPdf?L"pdf":L"md";
-                const wchar_t* filter=id==ExportPng?L"Image PNG\0*.png\0\0":id==ExportSvg?L"Image SVG\0*.svg\0\0":id==ExportPdf?L"Document PDF\0*.pdf\0\0":L"Plan Markdown\0*.md\0\0";
-                std::wstring name=L"Ma carte.";name+=ext;
-                auto path=dialog(true,filter,ext,name.c_str());if(path.empty())return;
-                if(id==ExportPng)export_png(path);else if(id==ExportPdf)export_pdf(path);else atomic_write(path,id==ExportSvg?document::svg(state):document::markdown(state));
-                status=L"Export terminé · "+path.filename().wstring();repaint();return;
-            }
-            if(id==CopyBranch){set_clipboard_text(window,document::branch_markdown(state,state.selected));status=L"Branche copiée en texte : collez-la dans vos notes ou dans une autre carte (Ctrl+Maj+V).";repaint();return;}
-            if(id==Fit){fit();return;}
-            if(id==SelectRoot){select(1);ensure_visible(1);return;}
-            if(id==OpenSubmap){open_submap();return;}
-            if(id==UpSubmap){up_submap();return;}
-            if(id==CreateSubmap){create_submap();return;}
-            if(id==DetachSubmap){
-                if(!state.submaps.count(state.selected))return;
-                auto before=document::encode(state);state.submaps.erase(state.selected);remember(std::move(before));
-                changed(L"Sous-carte détachée · le fichier de la sous-carte est conservé");return;
-            }
-            if(id==LinkMode){
-                linking=!linking;link_from=state.selected;selected_link=-1;
-                status=linking?L"Cliquez sur l’idée à relier à « "+wide(state.map->nodes.at(link_from)->title)+L" »":L"Liaison annulée";repaint();return;
-            }
-            if(id==Undo||id==Redo){
-                if(!(id==Undo?history.can_undo():history.can_redo())){status=L"Aucune modification à "+std::wstring(id==Undo?L"annuler":L"rétablir");repaint();return;}
-                auto current=document::encode(state);
-                adopt(document::decode(id==Undo?history.undo(current):history.redo(current)));
-                refresh_inspector();changed();return;
-            }
-            if(id>=LinkRow0&&id<LinkRow0+3){
-                auto row=static_cast<size_t>(id-LinkRow0);if(row>=link_rows.size())return;
-                selected_link=static_cast<int>(link_rows[row]);repaint();
-                POINT at;GetCursorPos(&at);link_menu(at);return;
-            }
-            std::string before=document::encode(state);
-            if(id==Add||id==Sibling){
-                add_new_node(id==Sibling);
-            } else if(id==Delete||id==DeleteLink||(id>=LinkRowDelete0&&id<LinkRowDelete0+3)){
-                if(id>=LinkRowDelete0){auto row=static_cast<size_t>(id-LinkRowDelete0);if(row>=link_rows.size())return;selected_link=static_cast<int>(link_rows[row]);}
-                if(selected_link>=0){state.links.erase(state.links.begin()+selected_link);selected_link=-1;}
-                else if(id==DeleteLink)return;
-                else {
-                    if(state.selected==1){status=L"Le sujet central se renomme ; il ne se supprime pas.";repaint();return;}
-                    size_t count=state.map->descendants(state.selected).size();
-                    if(count>1&&!smoke){std::wstring msg=L"Supprimer cette branche et ses "+std::to_wstring(count-1)+L" sous-idées ?\nCtrl+Z permet de revenir en arrière.";if(MessageBoxW(window,msg.c_str(),L"Supprimer une branche",MB_YESNO|MB_ICONQUESTION)!=IDYES)return;}
-                    state.selected=state.map->remove(state.selected);document::layout(state);
-                }
-            } else if(id==Duplicate){
-                if(state.map->next_id>=2147481647)throw std::runtime_error("Identifiants epuises : creez une nouvelle carte");
-                state.selected=document::duplicate_branch(state,state.selected);document::layout(state);
-            } else if(id==PasteOutline){
-                if(state.map->next_id>=2147479647)throw std::runtime_error("Identifiants epuises : creez une nouvelle carte");
-                auto created=document::apply_outline(state,state.selected,document::parse_outline(clipboard_text(window)));
-                document::layout(state);state.selected=created.front();
-                remember(std::move(before));refresh_inspector();changed(std::to_wstring(created.size())+L" idées ajoutées depuis le presse-papiers");ensure_visible(state.selected);return;
-            }
-            else if(id==Layout){document::layout(state);}
-            else if(id==LayoutRight||id==LayoutBalanced||id==LayoutRadial){state.layout=id==LayoutRight?document::LayoutRight:id==LayoutBalanced?document::LayoutBalanced:document::LayoutRadial;document::layout(state);}
-            else if(id==ToggleNotes){state.show_notes=!state.show_notes;document::layout(state);}
-            else if(id==Collapse){if(state.map->nodes.at(state.selected)->children.empty())return;state.map->toggle(state.selected);document::layout(state);}
-            else if(id>=Color0&&id<Color0+6){state.map->set_color(state.selected,palette[id-Color0],true);}
-            else if(id==CustomColor){
-                auto current=state.map->nodes.at(state.selected)->color;
-                CHOOSECOLORW pick{};pick.lStructSize=sizeof(pick);pick.hwndOwner=window;pick.lpCustColors=custom_colors;
-                pick.rgbResult=RGB(current>>16&255,current>>8&255,current&255);pick.Flags=CC_FULLOPEN|CC_RGBINIT;
-                if(!ChooseColorW(&pick))return;
-                state.map->set_color(state.selected,(GetRValue(pick.rgbResult)<<16)|(GetGValue(pick.rgbResult)<<8)|GetBValue(pick.rgbResult),true);
-            }
-            else if(id>=Marker0&&id<Marker0+document::marker_count){
-                const int marker=id-Marker0;
-                if(document::marker_of(state,state.selected)==marker||marker==0)state.markers.erase(state.selected);else state.markers[state.selected]=marker;
-                status=L"Repère : "+wide(document::marker_info(document::marker_of(state,state.selected)).name);
-            }
-            else if(id>=LinkLabel0&&id<=LinkLabel0+link_label_custom&&selected_link>=0){
-                auto& link=state.links[static_cast<size_t>(selected_link)];
-                if(id==LinkLabel0+link_label_custom){
-                    auto answer=ask_text(window,L"Libellé du lien",L"Texte affiché sur le lien (200 caractères au plus) :",wide(link.label));
-                    if(!answer)return;
-                    link.label=document::clip_utf8(document::trim(utf8(*answer)),document::max_link_label);
-                } else link.label=id==LinkLabel0+link_label_none?"":document::link_presets[id-LinkLabel0];
-            }
-            else if(id==ReverseLink&&selected_link>=0){auto& link=state.links[static_cast<size_t>(selected_link)];std::swap(link.from,link.to);}
-            else return;
-            std::string after;
-            try{after=document::encode(state);}
-            catch(...){adopt(document::decode(before));refresh_inspector();refresh_outline();repaint();throw;}
-            if(after==before){repaint();return;}
-            remember(std::move(before));refresh_inspector();
-            const bool keep_status=id>=Marker0&&id<Marker0+document::marker_count;
-            if(keep_status)changed(status);else changed();
-            if(id==Layout||id==LayoutRight||id==LayoutBalanced||id==LayoutRadial)fit();
-            if(id==Add||id==Sibling||id==Duplicate){ensure_visible(state.selected);}
-            if(id==Add||id==Sibling){SetFocus(title);SendMessageW(title,EM_SETSEL,0,-1);}
+            if(file_flow(id))return;
+            if(view_flow(id))return;
+            edit_flow(id);
         } catch(const PyThrow& e){show_error(e.p->py_exc_str());}
           catch(const std::exception& e){show_error(e.what());}
     }
@@ -1274,17 +1355,49 @@ public:
             remember(std::move(before));changed(L"Lien créé · clic droit dessus pour lui donner un libellé (cause, conséquence…)");
         }catch(const std::exception& e){show_error(e.what());}
     }
+    // Keyboard shortcuts. Returns true when the key was consumed; "editing" means a text field has the focus.
+    bool key_down(WPARAM key,bool control,bool shift,bool editing,HWND focus){
+            int action=0;
+            if(control){
+                switch(key){case 'N':action=ui::New;break;case 'O':action=ui::Open;break;case 'S':action=shift?ui::SaveAs:ui::Save;break;
+                    case 'I':action=ui::ImportOutline;break;
+                    case 'Z':if(!editing)action=shift?ui::Redo:ui::Undo;break;case 'Y':if(!editing)action=ui::Redo;break;
+                    case 'D':if(!editing)action=ui::Duplicate;break;case 'L':action=ui::Layout;break;
+                    case 'C':if(shift&&!editing)action=ui::CopyBranch;break;case 'V':if(shift&&!editing)action=ui::PasteOutline;break;
+                    case 'F':if(shift){action=ui::GlobalSearch;break;}if(!home){SetFocus(search);SendMessageW(search,EM_SETSEL,0,-1);}return true;
+                    case VK_RETURN:action=ui::Apply;break;}
+            }else if(!editing){
+                
+                if(key>='0'&&key<='5')action=ui::Marker0+static_cast<int>(key-'0');
+                else if(key>=VK_NUMPAD0&&key<=VK_NUMPAD5)action=ui::Marker0+static_cast<int>(key-VK_NUMPAD0);
+                else switch(key){case VK_TAB:action=ui::Add;break;case VK_RETURN:action=ui::Sibling;break;case VK_DELETE:action=ui::Delete;break;case 'F':action=ui::Fit;break;
+                    case 'L':action=ui::LinkMode;break;case 'N':action=ui::ToggleNotes;break;case 'M':action=ui::ToggleMinimap;break;case 'O':action=ui::OpenSubmap;break;case VK_BACK:action=ui::UpSubmap;break;
+                    case VK_HOME:action=ui::SelectRoot;break;
+                    case VK_LEFT:navigate(-1,0);return true;case VK_RIGHT:navigate(1,0);return true;
+                    case VK_UP:navigate(0,-1);return true;case VK_DOWN:navigate(0,1);return true;
+                    case VK_F2:if(!home){SetFocus(title);SendMessageW(title,EM_SETSEL,0,-1);}return true;}
+            }
+            if(key==VK_ESCAPE){
+                if(editing){commit_edit();SetFocus(window);return true;}
+                if(linking){linking=false;status=L"Liaison annulée";repaint();return true;}
+                if(selected_link>=0){selected_link=-1;repaint();return true;}
+            }
+            if(action){command(action);return true;}
+            if(editing&&key==VK_TAB){SetFocus(focus==title?note:focus==note?search:title);return true;}
+        return false;
+    }
     void mouse_down(PointF point, bool middle){
         if(!middle){
             for(const auto& button:buttons)if(button.rect.Contains(point)){
                 POINT at{static_cast<LONG>(button.rect.X*scale),static_cast<LONG>(button.rect.GetBottom()*scale)};ClientToScreen(window,&at);
                 if(button.command==0)file_menu(at);
                 else if(button.command==-1)view_menu(at);
+                else if(button.command==-2)cards_menu(at);
                 else command(button.command);
                 return;
             }
             for(const auto& row:outline_hits)if(row.first.Contains(point)){
-                if(revising&&masked(row.second))reveal(row.second);else select(row.second);
+                select(row.second);
                 auto n=state.map->nodes.at(row.second);state.pan_x=canvas.Width/2-n->x*state.zoom;state.pan_y=canvas.Height/2-n->y*state.zoom;autosave_pending=true;repaint();return;
             }
         }
@@ -1294,9 +1407,9 @@ public:
         long long target=middle?0:hit(point);
         if(linking&&!middle){finish_link(target);return;}
         if(target && !(GetKeyState(VK_SPACE)&0x8000)){
-            if(revising&&masked(target))reveal(target);else select(target);
+            select(target);
             auto n=state.map->nodes.at(target);
-            if(!revising&&state.submaps.count(target)){
+            if(state.submaps.count(target)){
                 // The ▶ badge on the top-right corner opens the sub-map.
                 auto b=document::box(state,target);auto pos=project(b.right(),b.top());
                 if(std::abs(point.X-(pos.X-6*state.zoom))<11*state.zoom&&std::abs(point.Y-(pos.Y+6*state.zoom))<11*state.zoom){command(OpenSubmap);return;}
@@ -1345,7 +1458,7 @@ public:
         if(dragging&&moved){
             if(drag_before.empty())drag_before=document::encode(state);
             try{
-                if((GetKeyState(VK_SHIFT)&0x8000)&&!revising){auto target=hit(point);if(target&&target!=drag_id){state.map->reparent(drag_id,target);document::layout(state);}}
+                if((GetKeyState(VK_SHIFT)&0x8000)){auto target=hit(point);if(target&&target!=drag_id){state.map->reparent(drag_id,target);document::layout(state);}}
                 if(drag_before!=document::encode(state)){remember(std::move(drag_before));changed();}
             }catch(const PyThrow& e){adopt(document::decode(drag_before));refresh_inspector();show_error(e.p->py_exc_str());}
         }
@@ -1422,12 +1535,6 @@ public:
             command(LayoutRadial);command(ToggleNotes);command(ToggleDark);select(1);fit();
             capture(directory/L"test-interface-sombre.png");
             command(ToggleDark);command(LayoutBalanced);
-            select(1);command(Revision);expect(revising&&!scope.empty(),"Mode revision");
-            command(Add);expect(revising&&state.map->nodes.size()==decoded.map->nodes.size(),"Edition bloquee en revision");
-            for(int i=0;i<4;++i)command(RevealNext);
-            command(Marker0+3);
-            capture(directory/L"test-revision.png");
-            command(RevisionReview);command(RevisionStop);expect(!revising,"Fin de revision");
             select(1);
             {
                 Bitmap diagram(180,80,PixelFormat32bppARGB);
@@ -1454,8 +1561,46 @@ public:
                 expect(trail.empty()&&current_file==parent_file&&state.selected==holder&&state.submaps.count(holder),"Retour à la carte parente");
                 {auto n=state.map->nodes.at(holder);state.zoom=1.2;state.pan_x=canvas.Width/2-n->x*state.zoom;state.pan_y=canvas.Height/2-n->y*state.zoom;}
                 capture(directory/L"test-carte-parente.png");
-                command(OpenSubmap);expect(trail.size()==1&&state.map->nodes.size()==2,"Réouverture de la sous-carte");
-                command(UpSubmap);select(1);
+                // Titles stay shared: renamed inside the sub-map, the idea follows on the way up; renamed in the parent, the sub-map follows.
+                select(holder);command(OpenSubmap);select(1);SetWindowTextW(title,L"Titre modifié dans la sous-carte");commit_edit();command(UpSubmap);
+                expect(state.map->nodes.at(holder)->title=="Titre modifié dans la sous-carte","Titre de l'idée après remontée");
+                select(holder);SetWindowTextW(title,L"Retitré dans la carte parente");commit_edit();checkpoint();
+                const auto child_path=submap::resolve(current_file,state.submaps.at(holder));
+                expect(document::decode(read_file(child_path)).map->nodes.at(1)->title=="Retitré dans la carte parente","Titre de la sous-carte après renommage de l'idée");
+                // A missing sub-map file is reported, never opened blindly.
+                {
+                    const auto kept=read_file(child_path);fs::remove(child_path);
+                    command(OpenSubmap);expect(trail.empty()&&status.find(L"introuvable")!=std::wstring::npos,"Sous-carte introuvable");
+                    atomic_write(child_path,kept);
+                }
+                // Same trip with the keyboard: O opens, Backspace goes back up; typing in a field never triggers shortcuts.
+                select(holder);
+                expect(!key_down('O',false,false,true,nullptr)&&trail.empty(),"O ne doit rien faire pendant la saisie");
+                expect(key_down('O',false,false,false,nullptr)&&trail.size()==1&&state.map->nodes.size()==2,"Touche O : ouvrir la sous-carte");
+                expect(key_down(VK_BACK,false,false,false,nullptr)&&trail.empty()&&state.selected==holder,"Retour arrière : remonter");
+                expect(!key_down(VK_BACK,false,false,false,nullptr)||trail.empty(),"Retour arrière sans parent");
+                expect(key_down(VK_HOME,false,false,false,nullptr)&&state.selected==1,"Origine : sujet central");
+                expect(key_down('N',false,false,false,nullptr)&&state.show_notes&&key_down('N',false,false,false,nullptr)&&!state.show_notes,"Touche N");
+                expect(key_down('1',false,false,false,nullptr)&&document::marker_of(state,1)==1,"Touche 1 : repère");
+                key_down('0',false,false,false,nullptr);
+                select(1);
+                // Three levels: jump around the hierarchy, search every level, export it as one course.
+                const auto top=current_file;
+                select(holder);command(OpenSubmap);select(2);command(CreateSubmap);
+                expect(trail.size()==2,"Sous-sous-carte");
+                const auto deepest=current_file;
+                select(1);SetWindowTextW(title,L"Mot rarissime xylophone");commit_edit();checkpoint();
+                auto hits=submap::search(top,"XYLOPHONE");
+                expect(!hits.empty()&&submap::same(hits[0].file,deepest)&&hits[0].path.find(" › ")!=std::string::npos,"Recherche globale");
+                jump_to(top,top,1);expect(trail.empty()&&submap::same(current_file,top),"Saut vers la carte racine");
+                jump_to(top,deepest,1);expect(trail.size()==2&&submap::same(current_file,deepest)&&submap::same(trail[0].file,top),"Saut vers la sous-sous-carte");
+                command(UpSubmap);command(UpSubmap);expect(trail.empty()&&submap::same(current_file,top),"Remontée sur deux niveaux");
+                const auto course_path=directory/L"test-cours.md";export_course_to(course_path);
+                const auto course_text=read_file(course_path);
+                expect(course_text.starts_with("<!--")&&course_text.find("\n## ")!=std::string::npos&&course_text.find("\n### ")!=std::string::npos,"Cours complet : sections par niveau");
+                fs::create_directories(directory/L"test-nemo");nemo::set_courses_folder(directory,directory/L"test-nemo");
+                expect(submap::same(nemo::courses_folder(directory),directory/L"test-nemo"),"Dossier des cours Nemo");
+                expect(fs::exists(nemo::export_course(top,nemo::courses_folder(directory))),"Export Nemo");
             }
             store.custom_model("Mon modèle de test",state);go_home();expect(home&&!IsWindowVisible(title),"Accueil incorrect");capture(directory/L"test-accueil.png");
             atomic_write(directory/L"smoke-test-report.json","{\"ok\":true,\"nodes\":"+std::to_string(state.map->nodes.size())+",\"links\":"+std::to_string(state.links.size())
@@ -1499,7 +1644,7 @@ LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wp,LPARAM lp){
                 if(app->home)return 0;
                 PointF p(GET_X_LPARAM(lp)/app->scale,GET_Y_LPARAM(lp)/app->scale);
                 if(!app->canvas.Contains(p)||app->linking)return 0;
-                if(auto id=app->hit(p)){if(app->revising){app->reveal(id);}else{app->select(id,false);SetFocus(app->title);SendMessageW(app->title,EM_SETSEL,0,-1);}}
+                if(auto id=app->hit(p)){app->select(id,false);SetFocus(app->title);SendMessageW(app->title,EM_SETSEL,0,-1);}
                 else if(int link=app->hit_link(p);link>=0){app->selected_link=link;app->command(LinkLabel0+link_label_custom);}
                 return 0;
             }
@@ -1527,7 +1672,7 @@ LRESULT CALLBACK procedure(HWND window,UINT message,WPARAM wp,LPARAM lp){
                     fs::path file(path);auto ext=lowercase(file.extension().wstring());
                     if(ext==L".png"||ext==L".jpg"||ext==L".jpeg"||ext==L".bmp"){
                         if(app->home){app->status=L"Ouvrez ou créez une carte pour y ajouter cette image.";app->repaint();}
-                        else if(!app->revising&&app->commit_edit())app->attach_picture(file);
+                        else if(app->commit_edit())app->attach_picture(file);
                     }else if(app->may_replace())app->import_path(file);
                 }
                 return 0;
@@ -1574,34 +1719,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR,int show){
                     bool control=(GetKeyState(VK_CONTROL)&0x8000)!=0,shift=(GetKeyState(VK_SHIFT)&0x8000)!=0;
                     HWND focus=GetFocus();bool editing=focus==app.title||focus==app.note||focus==app.search;
                     if(GetAncestor(focus,GA_ROOT)!=window){TranslateMessage(&msg);DispatchMessageW(&msg);continue;}
-                    int action=0;
-                    if(control){
-                        switch(msg.wParam){case 'N':action=ui::New;break;case 'O':action=ui::Open;break;case 'S':action=shift?ui::SaveAs:ui::Save;break;
-                            case 'I':action=ui::ImportOutline;break;
-                            case 'Z':if(!editing)action=shift?ui::Redo:ui::Undo;break;case 'Y':if(!editing)action=ui::Redo;break;
-                            case 'D':if(!editing)action=ui::Duplicate;break;case 'L':action=ui::Layout;break;
-                            case 'C':if(shift&&!editing)action=ui::CopyBranch;break;case 'V':if(shift&&!editing)action=ui::PasteOutline;break;
-                            case 'F':if(!app.home){SetFocus(app.search);SendMessageW(app.search,EM_SETSEL,0,-1);}continue;
-                            case VK_RETURN:action=ui::Apply;break;}
-                    }else if(!editing){
-                        const WPARAM key=msg.wParam;
-                        if(key>='0'&&key<='5')action=ui::Marker0+static_cast<int>(key-'0');
-                        else if(key>=VK_NUMPAD0&&key<=VK_NUMPAD5)action=ui::Marker0+static_cast<int>(key-VK_NUMPAD0);
-                        else switch(key){case VK_TAB:action=ui::Add;break;case VK_RETURN:action=ui::Sibling;break;case VK_DELETE:action=ui::Delete;break;case 'F':action=ui::Fit;break;
-                            case 'L':action=ui::LinkMode;break;case 'N':action=ui::ToggleNotes;break;case 'M':action=ui::ToggleMinimap;break;case 'R':action=ui::Revision;break;case 'O':action=ui::OpenSubmap;break;case VK_BACK:action=ui::UpSubmap;break;
-                            case VK_SPACE:if(app.revising)action=ui::RevealNext;break;case VK_HOME:action=ui::SelectRoot;break;
-                            case VK_LEFT:app.navigate(-1,0);continue;case VK_RIGHT:app.navigate(1,0);continue;
-                            case VK_UP:app.navigate(0,-1);continue;case VK_DOWN:app.navigate(0,1);continue;
-                            case VK_F2:if(!app.home&&!app.revising){SetFocus(app.title);SendMessageW(app.title,EM_SETSEL,0,-1);}continue;}
-                    }
-                    if(msg.wParam==VK_ESCAPE){
-                        if(editing){app.commit_edit();SetFocus(window);continue;}
-                        if(app.linking){app.linking=false;app.status=L"Liaison annulée";app.repaint();continue;}
-                        if(app.revising){app.stop_revision();continue;}
-                        if(app.selected_link>=0){app.selected_link=-1;app.repaint();continue;}
-                    }
-                    if(action){app.command(action);continue;}
-                    if(editing&&msg.wParam==VK_TAB){SetFocus(focus==app.title?app.note:focus==app.note?app.search:app.title);continue;}
+                    if(app.key_down(msg.wParam,control,shift,editing,focus))continue;
                 }
                 TranslateMessage(&msg);DispatchMessageW(&msg);
             }

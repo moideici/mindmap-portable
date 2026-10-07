@@ -105,6 +105,7 @@ int main(int argc,char** argv){
             // A hand-edited file cannot smuggle a path outside the folder tree.
             auto hostile=document::encode(history_map);hostile.replace(hostile.find("Histoire/"),9,"../x/Histo");rejects([&]{document::decode(hostile);});
             CHECK(submap::slug("CON")=="_CON"&&submap::slug("a/b:c?")=="a_b_c_"&&submap::slug("  ")=="Sous-carte"&&submap::slug("fin...")=="fin");
+            CHECK(submap::fold("Révolution ŒUVRE École Çà ÿ « Napoléon »")=="revolution oeuvre ecole ca y « napoleon »");
             document::State pruned=history_map;pruned.map->remove(theme_node);document::prune(pruned);CHECK(pruned.submaps.empty());
         }
         for(const std::string& raw:std::vector<std::string>{"", "a", "ab", "abc", "abcd",std::string("\0\xff\x80",3)})CHECK(document::unbase64(document::base64(raw))==raw);

@@ -1,6 +1,6 @@
 # MindMap portable
 
-Carte mentale pour Windows, pensée pour réviser : **un seul fichier `MindMap.exe`**, sans installation, sans compte, sans connexion à Internet. Le dossier peut être copié sur une clé USB.
+Carte mentale pour Windows, pensée pour organiser un cours : **un seul fichier `MindMap.exe`**, sans installation, sans compte, sans connexion à Internet. Le dossier peut être copié sur une clé USB.
 
 ![Carte en mode clair, branches des deux côtés et aperçu des notes](docs/capture-claire.png)
 
@@ -10,6 +10,8 @@ Téléchargez l'exécutable dans les [Releases](../../releases) ou compilez-le (
 
 - **Sous-cartes** : une idée peut contenir une autre carte (histoire → thème 1 → chapitre 1…), à n'importe quel niveau. Chaque carte reste un fichier `.mindmap` ; l'idée porte un badge ▶. **O** ou un clic sur le badge ouvre la sous-carte (ou propose de la créer), **Retour arrière** ou « ↑ Remonter » revient, un fil d'Ariane montre le chemin. Les sous-cartes sont créées à côté de la carte parente, dans un dossier du même nom.
 - **`mindmap-cli.exe`** : version en ligne de commande, sans fenêtre, pour que des IA ou des scripts **créent, lisent et modifient** des cartes et leurs sous-cartes (`show --json`, `add`, `add-outline`, `set`, `submap-new`, `validate`…). Guide complet : [docs/CLI.md](docs/CLI.md).
+- **Explorer la hiérarchie** : le bouton **Cartes ▾** liste toutes les cartes (histoire, thèmes, chapitres…) pour y sauter directement, et **Ctrl+Maj+F** cherche un mot dans toutes les cartes à la fois (`search` en ligne de commande).
+- **Cours complet et Nemo** : *Fichier > Exporter le cours complet…* écrit toute la hiérarchie en un Markdown structuré (une section par sous-carte) ; *Exporter pour Nemo…* le dépose dans le dossier de cours que [Nemo](docs/CLI.md#cours-et-nemo) synchronise. `import-course` fait le chemin inverse : un cours en Markdown devient une carte avec ses sous-cartes.
 
 ## Nouveautés de la version 3
 
@@ -31,17 +33,14 @@ Les captures ci-dessous montrent l'interface de la version 2 ; l'accueil et les 
 | 3 | **Affichage des détails** | Idées dont la taille suit le texte (titres sur plusieurs lignes), aperçu des notes sur la carte (N), note complète au survol, idées trouvées surlignées pendant une recherche |
 | 4 | **Relier deux idées** | Liens transversaux fléchés (L puis clic), avec libellés : cause de, conséquence, s'oppose à, exemple de… ou texte libre |
 | 5 | **Repères** | ★ important, ✓ acquis, ? à revoir, ! attention, ⚑ repère clé (touches 1 à 5), plus une couleur personnalisée |
-| 6 | **Mode révision** | Les idées sont masquées puis découvertes une à une (Espace) ; auto-évaluation acquis / à revoir ; second passage sur les seules idées à revoir |
-| 7 | **Plans texte** | Importer un plan Markdown ou texte indenté, coller un plan sous une idée (Ctrl+Maj+V), copier une branche en texte (Ctrl+Maj+C) |
-| 8 | **Navigation clavier** | Les flèches passent à l'idée voisine dans la direction choisie, quelle que soit la disposition ; Origine revient au sujet central |
-| 9 | **Mini-carte** | Vue d'ensemble cliquable en bas à droite (M) |
-| 10 | **Thème sombre** | Interface, carte et barre de titre Windows |
+| 6 | **Plans texte** | Importer un plan Markdown ou texte indenté, coller un plan sous une idée (Ctrl+Maj+V), copier une branche en texte (Ctrl+Maj+C) |
+| 7 | **Navigation clavier** | Les flèches passent à l'idée voisine dans la direction choisie, quelle que soit la disposition ; Origine revient au sujet central |
+| 8 | **Mini-carte** | Vue d'ensemble cliquable en bas à droite (M) |
+| 9 | **Thème sombre** | Interface, carte et barre de titre Windows |
 
 Les cartes des versions 1 et 2 restent lisibles. Les nouveaux fichiers utilisent le format `version 3`, qui ajoute les images intégrées ; une carte qui contient des sous-cartes est écrite en `version 4`.
 
-| Thème sombre, disposition radiale | Mode révision |
-|---|---|
-| ![](docs/capture-sombre-radiale.png) | ![](docs/capture-revision.png) |
+![Thème sombre, disposition radiale](docs/capture-sombre-radiale.png)
 
 ## Une première carte en une minute
 
@@ -49,7 +48,7 @@ Les cartes des versions 1 et 2 restent lisibles. Les nouveaux fichiers utilisent
 2. Sélectionnez le sujet et appuyez sur **Tab** pour créer une idée enfant ; **Entrée** ajoute une idée au même niveau.
 3. Écrivez le titre et les notes ; **Ctrl+Entrée** applique, et tout est aussi appliqué après une courte pause.
 4. **L** puis un clic sur une autre idée crée un lien ; clic droit sur le lien pour lui donner un libellé.
-5. **R** lance la révision ; **Ctrl+S** choisit le nom et l'emplacement de la carte. Les changements suivants sont enregistrés automatiquement dans ce fichier.
+5. **Ctrl+S** choisit le nom et l'emplacement de la carte. Les changements suivants sont enregistrés automatiquement dans ce fichier.
 
 `Exemple - révisions.mindmap` fournit un autre exemple : ouvrez-le avec **Ctrl+O** ou glissez-le sur la fenêtre. Un fichier `.md` ou `.txt` glissé sur la fenêtre est importé comme plan.
 
@@ -64,7 +63,7 @@ Les cartes des versions 1 et 2 restent lisibles. Les nouveaux fichiers utilisent
 | Libellé, sens ou suppression d'un lien | Clic droit sur le lien ; double-clic pour un libellé libre ; Suppr |
 | Repères | 1 ★ · 2 ✓ · 3 ? · 4 ! · 5 ⚑ · 0 retire |
 | Aperçu des notes / mini-carte | N / M |
-| Réviser | R, puis Espace pour révéler, 2 / 3 pour s'évaluer, Échap pour terminer |
+| Ouvrir / créer la sous-carte, remonter | O (ou clic sur le badge ▶) / Retour arrière |
 | Copier une branche en texte / coller un plan | Ctrl+Maj+C / Ctrl+Maj+V |
 | Importer un plan | Ctrl+I |
 | Zoomer / déplacer la vue | Molette / glisser le fond ou la mini-carte |

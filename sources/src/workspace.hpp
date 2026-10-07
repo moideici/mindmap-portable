@@ -56,7 +56,7 @@ struct Model {const char* name;const char* description;const char* outline;};
 inline const std::vector<Model>& models(){
     static const std::vector<Model> entries={
         {"Carte vide","Commencer avec un sujet central","# Mon sujet\n"},
-        {"Réviser un chapitre","Notions, exemples et questions","# Mon chapitre\n- Notions clés\n  - Définition\n  - Exemple\n- Dates et repères\n- Causes et conséquences\n- Questions pour s'entraîner\n"},
+        {"Un chapitre","Notions, exemples et questions","# Mon chapitre\n- Notions clés\n  - Définition\n  - Exemple\n- Dates et repères\n- Causes et conséquences\n- Questions pour s'entraîner\n"},
         {"Dissertation","Problématique et arguments","# Sujet de dissertation\n- Problématique\n- Introduction\n- Partie I\n  - Argument\n  - Exemple\n- Partie II\n  - Argument\n  - Exemple\n- Conclusion\n"},
         {"Chronologie","Événements et conséquences","# Ma chronologie\n- Première période\n  - Date et événement\n  - Conséquences\n- Deuxième période\n  - Date et événement\n  - Conséquences\n"},
         {"Comparer deux idées","Points communs et différences","# Comparaison\n- Idée A\n  - Définition\n  - Points forts\n  - Limites\n- Idée B\n  - Définition\n  - Points forts\n  - Limites\n- Points communs\n- Différences\n"}

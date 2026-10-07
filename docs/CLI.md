@@ -34,11 +34,36 @@ mindmap-cli add-outline "Révolution.mindmap" --parent 3 --outline plan.md
 | `move <carte> --id ID --parent ID` | Change le parent d'une branche |
 | `remove <carte> --id ID` | Supprime l'idée et ses descendants (les fichiers de sous-cartes ne sont jamais effacés) |
 | `link` / `unlink <carte> --from ID --to ID [--label L]` | Lien transversal |
+| `batch <carte> [--from ops.json]` | Plusieurs modifications en une seule écriture, **tout ou rien** (JSON sur l'entrée standard, voir plus bas) |
+| `orphans <carte>` | Fichiers de sous-cartes que plus aucune idée ne référence |
+| `search <carte> <mots> [--limit N]` | Cherche dans les titres et notes de la carte **et de toutes ses sous-cartes** (accents et casse ignorés ; tous les mots doivent figurer dans la même idée) |
+| `import-course <carte> [--from cours.md] [--split N] [--title T]` | Crée une carte depuis un cours Markdown ou texte ; `--split N` fait des **sous-cartes** des idées des N premiers niveaux qui ont des sous-idées |
+| `nemo-config [--courses <dossier>]` | Dossier des cours que Nemo synchronise (affiché si aucune option) |
+| `nemo-export <carte> [--to <dossier>]` | Écrit toute la hiérarchie en un cours Markdown « <titre> (carte mentale).md » |
 | `submap-new <carte> --id ID [--title T] [--outline plan.md]` | Crée la sous-carte de l'idée |
 | `submap-attach <carte> --id ID --file chemin.mindmap` | Relie une carte existante comme sous-carte |
 | `submap-detach <carte> --id ID` | Détache la sous-carte (le fichier est conservé) |
 
 Repères (`--marker`) : `0` aucun, `1` important, `2` acquis, `3` revoir, `4` attention, `5` repere (les noms français fonctionnent aussi). Dans `--note`, `\n` produit un retour à la ligne ; pour une note longue, utilisez `--note-file` (le fichier, ou `-` pour l'entrée standard). `--no-layout` conserve les positions telles quelles ; sinon la carte est réorganisée automatiquement.
+
+## Batch : plusieurs modifications d'un coup
+
+Une IA qui construit un cours entier a intérêt à envoyer **un seul batch** : la carte n'est lue et écrite qu'une fois, et si une opération échoue, **rien n'est écrit** (les fichiers de sous-cartes créés en cours de route sont supprimés). Chaque opération porte les mêmes paramètres que la commande du même nom ; `"as"` mémorise l'idée créée et `"$nom"` la désigne ensuite. Dans un batch, `note` et `outline` sont du texte direct (pas des chemins de fichier).
+
+```json
+{"ops": [
+  {"op": "add", "title": "Thème 1 : l'Europe", "as": "t1", "marker": "important"},
+  {"op": "add", "parent": "$t1", "title": "Chapitre 1", "note": "1789\nLa Révolution", "as": "c1"},
+  {"op": "submap-new", "id": "$c1", "outline": "- Causes\n- Conséquences"},
+  {"op": "link", "from": "$t1", "to": 1, "label": "voir aussi"}
+]}
+```
+
+```bash
+mindmap-cli batch Histoire.mindmap --json < ops.json
+```
+
+Opérations disponibles : `add`, `add-outline`, `set`, `move`, `remove`, `link`, `unlink`, `submap-new`, `submap-attach`, `submap-detach`.
 
 ## Sous-cartes : histoire → thème 1 → chapitre 1…
 
@@ -66,7 +91,19 @@ Règles :
 - Le chemin d'une sous-carte est **relatif**, sans `..` : le fichier doit se trouver dans le dossier de la carte parente ou dans un sous-dossier. Le format refuse tout autre chemin.
 - Une carte ne peut pas se contenir elle-même, directement ou via d'autres sous-cartes (`submap-attach` refuse les boucles).
 - Supprimer une idée qui a une sous-carte ne supprime **pas** le fichier de la sous-carte.
+- Le titre de l'idée et le sujet central de sa sous-carte restent **identiques** dans l'application : renommer l'idée renomme la sous-carte, et renommer la sous-carte puis remonter renomme l'idée. La CLI ne synchronise pas ces titres (modifiez-les des deux côtés avec `set`).
+- Si un fichier de sous-carte a été déplacé ou supprimé, l'application propose de le retrouver ou de détacher la sous-carte ; `validate` le signale (`introuvable`, code 1) et `orphans` liste les fichiers que plus aucune idée n'utilise.
+- Renommer la carte parente ne renomme pas son dossier de sous-cartes : les liens restent valables (chemins relatifs) mais le rangement par défaut ne suit plus le nom.
 - Dans l'application, ces idées portent un badge ▶ ; touche **O** ou clic sur le badge pour ouvrir, **Retour arrière** ou « ↑ Remonter » pour revenir (un fil d'Ariane indique le chemin). Sur une idée sans sous-carte, **O** propose de la créer.
+
+## Cours et Nemo
+
+Nemo lit les cours d'un dossier synchronisé (Word, PDF, PowerPoint, **Markdown**, texte). La connexion avec MindMap passe donc par des fichiers, sans réseau :
+
+- **Carte → Nemo** : `nemo-export` écrit toute la hiérarchie (carte, sous-cartes, sous-sous-cartes) en un seul fichier Markdown « *<titre> (carte mentale).md* ». Chaque carte est un plan en liste, et chaque idée qui porte une sous-carte devient une section (`#` Histoire, `##` Thème 1, `###` Chapitre 1…). À la prochaine synchronisation, Nemo le voit dans `list_courses` / `read_course` et peut s'en servir pour ses séances. Le fichier est **régénéré** à chaque export : modifiez la carte, pas le fichier.
+- **Nemo → carte** : une IA lit un cours avec `read_course` puis le transforme en cartes : `import-course Histoire.mindmap --split 2 --from -` (texte sur l'entrée standard). Les titres `#`, `##`, `###` deviennent les niveaux ; avec `--split 2`, les idées des deux premiers niveaux qui ont des sous-idées deviennent des sous-cartes (histoire → thème → chapitre), les niveaux suivants restent des idées.
+- **Dossier des cours** : indiquez-le une fois avec `nemo-config --courses "C:\\...\\cours\\hist géo"` (il est mémorisé dans `.mindmap-data/nemo.json`, à côté de l'exécutable), ou passez `--to <dossier>` à chaque export. Dans l'application, **Fichier > Exporter pour Nemo…** demande l'emplacement la première fois, puis le retient. L'export ne touche jamais aux autres fichiers du dossier.
+- Dans l'application, **Fichier > Exporter le cours complet…** produit le même Markdown où vous voulez.
 
 ## Précautions
 
