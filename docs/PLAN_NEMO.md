@@ -86,3 +86,17 @@ Un agent qui dispose des deux outils (MCP Nemo + `mindmap-cli`) peut déjà :
 - Aucune écriture dans le dossier des cours autre que le fichier généré (test : le dossier contient les mêmes autres fichiers avant et après).
 - Réseau : tous les appels ont un délai maximal, un message d'erreur lisible et sont désactivés par défaut.
 - Rétrocompatibilité : une carte sans sous-carte ni Nemo reste en `version 3` et lisible par les anciennes versions.
+
+## 7. Avancement (7 octobre 2026)
+
+Le serveur MCP Nemo était toujours déconnecté : les échanges réseau sont testés contre un **faux serveur Nemo local** (`sources/tests/nemo_check.py`, 4 tests CTest verts), pas contre le vrai.
+
+| Phase | État |
+|---|---|
+| 1. Publication par fichier | **Fait.** `nemo-export --all <dossier>` (cartes racines seulement), manifeste `.mindmap-data/nemo-exports.json` (une carte renommée remplace son ancien cours, une carte supprimée retire le sien, jamais un fichier étranger), option *Fichier > Publier vers Nemo à l'enregistrement (Ctrl+S)* (jamais à l'autosauvegarde, jamais par le réseau). |
+| 2. Dépôt direct sans démon | **Fait, facultatif et désactivé par défaut.** `nemo-remote`, `nemo-login` (Gestionnaire d'identification Windows), `nemo-push` (fichier + texte compagnon sous `<matière>/cartes/`, file d'attente hors-ligne, 413 et jeton refusé expliqués, https obligatoire). Pas d'interface graphique : CLI seulement. |
+| 3. Maîtrise Nemo | **Fait côté Nemo** (`POST /api/mastery/lookup`) **et côté CLI** (`nemo-mastery`, lecture seule, pastille séparée des repères manuels : décision 3). **Pas d'affichage dans la fenêtre** (badge sur les idées, « à revoir aujourd'hui » dans Cartes ▾) : à faire dans app.cpp. |
+| 4. Identifiants stables, extracteur `.mindmap` côté Nemo | **Non fait.** Demande un identifiant d'idée dans le format de fichier, un extracteur JavaScript qui duplique l'aplatissement C++ et des tests croisés. Tant qu'il manque, l'appariement se fait par titre (renommer une idée la sépare de son historique). |
+| 5. Boucle d'agent | **Fait** : `docs/AGENTS.md` (3 recettes) ; côté Nemo, `/nemo-prompt-fiche` lit les cartes mentales. |
+
+Décisions prises par défaut (modifiables) : la carte est la source de vérité, le `.md` est jetable (1) ; cours personnels par défaut, `--scope class` pour la classe (2) ; pastille séparée (3) ; sous-dossier `cartes/` côté réseau (4) ; jeton dans le Gestionnaire d'identification, jamais dans un fichier (5) ; le Markdown suffit sur Android tant que la phase 4 n'existe pas (6).

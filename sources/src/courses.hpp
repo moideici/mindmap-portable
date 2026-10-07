@@ -107,18 +107,35 @@ namespace nemo {
 namespace fs = submap::fs;
 // Nemo reads the course files of a folder (synchronised to its storage): maps are exported there as Markdown.
 inline fs::path config_file(const fs::path& workspace_root) { return fs::absolute(workspace_root) / ".mindmap-data" / "nemo.json"; }
-inline fs::path courses_folder(const fs::path& workspace_root) {
+struct Config { fs::path courses; bool auto_export = false; };
+inline Config load_config(const fs::path& workspace_root) {
+    Config c;
     auto file = config_file(workspace_root);
-    if (!fs::exists(file)) return {};
+    if (!fs::exists(file)) return c;
     auto j = document::Parser(workspace::read(file)).parse();
     if (j.at("format").text() != "mindmap-nemo") throw std::runtime_error("Configuration Nemo illisible");
-    return workspace::text_path(j.at("courses").text());
+    c.courses = workspace::text_path(j.at("courses").text());
+    if (j.object.count("autoExport")) c.auto_export = j.at("autoExport").flag();
+    return c;
 }
-inline void set_courses_folder(const fs::path& workspace_root, const fs::path& folder) {
-    if (!fs::is_directory(folder)) throw std::runtime_error("Dossier introuvable : " + workspace::path_text(folder));
+inline void save_config(const fs::path& workspace_root, const Config& c) {
     auto file = config_file(workspace_root);
     fs::create_directories(file.parent_path());
-    workspace::write(file, "{\"format\":\"mindmap-nemo\",\"version\":1,\"courses\":" + document::quote(workspace::path_text(fs::absolute(folder).lexically_normal())) + "}\n");
+    workspace::write(file, "{\"format\":\"mindmap-nemo\",\"version\":1,\"courses\":" + document::quote(workspace::path_text(c.courses)) + ",\"autoExport\":" + (c.auto_export ? "true" : "false") + "}\n");
+}
+inline fs::path courses_folder(const fs::path& workspace_root) { return load_config(workspace_root).courses; }
+inline bool auto_export(const fs::path& workspace_root) { try { return load_config(workspace_root).auto_export; } catch (...) { return false; } }
+inline void set_courses_folder(const fs::path& workspace_root, const fs::path& folder) {
+    if (!fs::is_directory(folder)) throw std::runtime_error("Dossier introuvable : " + workspace::path_text(folder));
+    auto c = load_config(workspace_root);
+    c.courses = fs::absolute(folder).lexically_normal();
+    save_config(workspace_root, c);
+}
+inline void set_auto_export(const fs::path& workspace_root, bool on) {
+    auto c = load_config(workspace_root);
+    if (on && c.courses.empty()) throw std::runtime_error("Configurez d'abord le dossier des cours : nemo-config --courses <dossier>");
+    c.auto_export = on;
+    save_config(workspace_root, c);
 }
 inline fs::path course_file(const fs::path& folder, const document::State& state) {
     return folder / workspace::text_path(submap::slug(state.map->nodes.at(1)->title) + " (carte mentale).md");
@@ -130,5 +147,72 @@ inline fs::path export_course(const fs::path& map_file, const fs::path& folder) 
     auto target = course_file(folder, submap::load(map_file));
     workspace::write(target, text);
     return target;
+}
+
+// ----- Exports suivis : renommer ou supprimer une carte ne laisse pas un ancien cours « fantome » dans le dossier de Nemo -----
+inline const std::string course_suffix = " (carte mentale).md";
+inline fs::path manifest_file(const fs::path& workspace_root) { return fs::absolute(workspace_root) / ".mindmap-data" / "nemo-exports.json"; }
+struct Tracked { std::string map, file; };
+inline std::vector<Tracked> load_manifest(const fs::path& workspace_root) {
+    std::vector<Tracked> out;
+    auto file = manifest_file(workspace_root);
+    if (!fs::exists(file)) return out;
+    try {
+        auto j = document::Parser(workspace::read(file)).parse();
+        for (const auto& e : j.at("exports").array) out.push_back({e.at("map").text(), e.at("file").text()});
+    } catch (...) { out.clear(); }
+    return out;
+}
+inline void save_manifest(const fs::path& workspace_root, const std::vector<Tracked>& list) {
+    std::string out = "{\"format\":\"mindmap-nemo-exports\",\"version\":1,\"exports\":[";
+    for (size_t i = 0; i < list.size(); ++i) out += (i ? "," : "") + std::string("{\"map\":") + document::quote(list[i].map) + ",\"file\":" + document::quote(list[i].file) + "}";
+    auto file = manifest_file(workspace_root);
+    fs::create_directories(file.parent_path());
+    workspace::write(file, out + "]}\n");
+}
+// Never deletes anything but a file this tool generated (its name ends with the course suffix) inside the courses folder.
+inline void remove_generated(const fs::path& folder, const std::string& file_text) {
+    auto file = workspace::text_path(file_text);
+    std::error_code e;
+    if (!submap::same(file.parent_path(), folder)) return;
+    if (file_text.size() < course_suffix.size() || file_text.compare(file_text.size() - course_suffix.size(), course_suffix.size(), course_suffix) != 0) return;
+    fs::remove(file, e);
+}
+// Exports map_file and keeps the manifest in step: a renamed map replaces its old course file, a vanished map's file is removed.
+inline fs::path export_tracked(const fs::path& workspace_root, const fs::path& map_file, const fs::path& folder) {
+    auto target = export_course(map_file, folder);
+    auto list = load_manifest(workspace_root);
+    const auto map_text = workspace::path_text(fs::absolute(map_file).lexically_normal());
+    const auto target_text = workspace::path_text(fs::absolute(target).lexically_normal());
+    std::vector<Tracked> next;
+    for (auto& t : list) {
+        const bool same_map = submap::same(workspace::text_path(t.map), map_file);
+        const bool gone = !fs::exists(workspace::text_path(t.map));
+        if ((same_map && t.file != target_text) || gone) remove_generated(folder, t.file);
+        if (!same_map && !gone) next.push_back(t);
+    }
+    next.push_back({map_text, target_text});
+    save_manifest(workspace_root, next);
+    return target;
+}
+// Root maps of a folder: every .mindmap that no other map of the folder holds as a sub-map.
+inline std::vector<fs::path> root_maps(const fs::path& folder) {
+    std::vector<fs::path> all;
+    std::error_code e;
+    for (fs::recursive_directory_iterator it(folder, fs::directory_options::skip_permission_denied, e), end; !e && it != end; it.increment(e)) {
+        if (it->is_directory(e) && it->path().filename() == ".mindmap-data") { it.disable_recursion_pending(); continue; }
+        if (it->is_regular_file(e) && it->path().extension() == ".mindmap") all.push_back(it->path());
+    }
+    std::vector<fs::path> held;
+    for (const auto& f : all) {
+        try { auto h = submap::hierarchy(f); for (size_t i = 1; i < h.size(); ++i) held.push_back(h[i].file); } catch (...) {}
+    }
+    std::vector<fs::path> roots;
+    for (const auto& f : all) {
+        bool is_held = false;
+        for (const auto& h : held) if (submap::same(h, f)) { is_held = true; break; }
+        if (!is_held) roots.push_back(f);
+    }
+    return roots;
 }
 } // namespace nemo

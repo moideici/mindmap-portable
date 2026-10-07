@@ -2,6 +2,7 @@
 // Chaque commande lit un fichier .mindmap, applique une modification (ou, avec « batch », plusieurs d'un coup)
 // et l'écrit de façon atomique. Les commandes sont déclarées dans une table : l'aide en est générée.
 #include "courses.hpp"
+#include "nemo_sync.hpp"
 #include "imports.hpp"
 #include <cstdio>
 #include <iostream>
@@ -33,7 +34,7 @@ struct Args {
     }
 };
 fs::path executable_folder;  // dossier de l'exécutable : c'est la racine de l'espace de travail portable (.mindmap-data)
-const std::set<std::string> boolean_flags = {"json", "deep", "only-node", "collapsed", "expanded", "no-layout", "help"};
+const std::set<std::string> boolean_flags = {"json", "deep", "only-node", "collapsed", "expanded", "no-layout", "help", "flush"};
 Args parse_args(const std::vector<std::string>& v) {
     Args a;
     for (size_t i = 0; i < v.size(); ++i) {
@@ -266,18 +267,122 @@ fs::path workspace_folder(const Args& a) { return a.has("workspace") ? workspace
 void cmd_nemo_config(const Args& a) {
     auto root = workspace_folder(a);
     if (a.has("courses")) nemo::set_courses_folder(root, workspace::text_path(a.get("courses")));
+    if (a.has("auto-export")) {
+        const auto v = a.get("auto-export");
+        if (v != "on" && v != "off") throw Usage("--auto-export attend on ou off");
+        nemo::set_auto_export(root, v == "on");
+    }
     auto folder = nemo::courses_folder(root);
+    const bool automatic = nemo::auto_export(root);
     const auto text = folder.empty() ? std::string() : workspace::path_text(folder);
-    if (a.has("json")) print("{\"ok\":true,\"courses\":" + (text.empty() ? "null" : quote(text)) + "}\n");
-    else print(text.empty() ? "Aucun dossier de cours Nemo configuré : nemo-config --courses <dossier>\n" : "Dossier des cours Nemo : " + text + "\n");
+    if (a.has("json")) print("{\"ok\":true,\"courses\":" + (text.empty() ? "null" : quote(text)) + ",\"autoExport\":" + (automatic ? "true" : "false") + "}\n");
+    else print((text.empty() ? "Aucun dossier de cours Nemo configuré : nemo-config --courses <dossier>\n" : "Dossier des cours Nemo : " + text + "\n")
+               + "Export à l'enregistrement (Ctrl+S dans l'application) : " + (automatic ? "oui" : "non") + "\n");
 }
 void cmd_nemo_export(const Args& a) {
-    auto file = map_path(a);
-    auto folder = a.has("to") ? workspace::text_path(a.get("to")) : nemo::courses_folder(workspace_folder(a));
+    auto root = workspace_folder(a);
+    auto folder = a.has("to") ? workspace::text_path(a.get("to")) : nemo::courses_folder(root);
     if (folder.empty()) throw Usage("Indiquez --to <dossier> ou configurez-le une fois : nemo-config --courses <dossier des cours synchronisés par Nemo>");
-    auto written = nemo::export_course(file, folder);
-    print(a.has("json") ? "{\"ok\":true,\"file\":" + quote(workspace::path_text(written)) + "}\n"
-                        : "Cours exporté pour Nemo : " + workspace::path_text(written) + "\n(Nemo le lira à sa prochaine synchronisation des cours.)\n");
+    std::vector<fs::path> maps;
+    if (a.has("all")) maps = nemo::root_maps(workspace::text_path(a.get("all")));
+    else maps.push_back(map_path(a));
+    if (maps.empty()) throw std::runtime_error("Aucune carte trouvée dans " + a.get("all"));
+    std::vector<fs::path> written;
+    for (const auto& map : maps) written.push_back(nemo::export_tracked(root, map, folder));
+    if (a.has("json")) {
+        std::string out = "{\"ok\":true," + (written.size() == 1 ? "\"file\":" + quote(workspace::path_text(written[0])) + "," : std::string()) + "\"files\":[";
+        for (size_t i = 0; i < written.size(); ++i) out += (i ? "," : "") + quote(workspace::path_text(written[i]));
+        print(out + "]}\n");
+        return;
+    }
+    std::string out = written.size() == 1 ? "Cours exporté pour Nemo : " + workspace::path_text(written[0]) + "\n" : std::to_string(written.size()) + " cours exportés pour Nemo :\n";
+    if (written.size() > 1) for (const auto& w : written) out += "  " + workspace::path_text(w) + "\n";
+    print(out + "(Nemo le lira à sa prochaine synchronisation des cours.)\n");
+}
+void cmd_nemo_remote(const Args& a) {
+    auto root = workspace_folder(a);
+    auto r = nemo::load_remote(root);
+    if (a.has("url")) r.url = a.get("url");
+    if (a.has("subject")) r.subject = document::trim(a.get("subject"));
+    if (a.has("folder")) r.folder = document::trim(a.get("folder"));
+    if (a.has("scope")) {
+        const auto v = a.get("scope");
+        if (v != "class" && v != "personal") throw Usage("--scope attend personal ou class");
+        r.class_scope = v == "class";
+    }
+    if (a.has("url") || a.has("subject") || a.has("folder") || a.has("scope")) {
+        while (!r.url.empty() && r.url.back() == '/') r.url.pop_back();
+        nemo::need_remote(r);
+        nemo::save_remote(root, r);
+    }
+    const bool logged = !nemo::load_token().empty();
+    if (a.has("json")) print("{\"ok\":true,\"url\":" + quote(r.url) + ",\"subject\":" + quote(r.subject) + ",\"folder\":" + quote(r.folder) + ",\"scope\":" + quote(r.class_scope ? "class" : "personal") + ",\"token\":" + (logged ? "true" : "false") + "}\n");
+    else print(r.url.empty() ? "Réseau Nemo non configuré (facultatif) : nemo-remote --url https://… --subject \"hist géo\" [--folder cartes] [--scope class]\n"
+                             : "Nemo : " + r.url + " · matière « " + r.subject + " » · dossier « " + r.folder + " » · cours " + (r.class_scope ? "de la classe" : "personnels") + " · jeton " + (logged ? "enregistré" : "absent (nemo-login)") + "\n");
+}
+void cmd_nemo_login(const Args&) {
+    auto token = document::trim(read_stdin());
+    if (token.empty() || token.size() > 512 || token.find_first_of("\r\n \t") != std::string::npos) throw Usage("Envoyez le jeton sur l'entrée standard : echo VOTRE_JETON | mindmap-cli nemo-login");
+    nemo::store_token(token);
+    print("Jeton Nemo enregistré dans le Gestionnaire d'identification Windows (« MindMap/Nemo »).\n");
+}
+void cmd_nemo_logout(const Args&) {
+    nemo::clear_token();
+    print("Jeton Nemo supprimé.\n");
+}
+void cmd_nemo_push(const Args& a) {
+    auto root = workspace_folder(a);
+    auto remote = nemo::load_remote(root);
+    nemo::need_remote(remote);
+    auto token = nemo::checked_token();
+    std::vector<fs::path> maps;
+    if (a.has("all")) maps = nemo::root_maps(workspace::text_path(a.get("all")));
+    else if (!a.has("flush")) maps.push_back(map_path(a));
+    size_t flushed = 0;
+    try { flushed = nemo::flush_queue(root, remote, token); } catch (const std::runtime_error& e) { if (std::string(e.what()).rfind("réseau :", 0) != 0) throw; }
+    size_t sent = 0, queued = 0;
+    std::string lines;
+    for (const auto& map : maps) {
+        auto outcome = nemo::push_map(root, remote, token, map);
+        (outcome == "sent" ? sent : queued)++;
+        lines += (outcome == "sent" ? "  publié : " : "  en attente (réseau) : ") + workspace::path_text(map.filename()) + "\n";
+    }
+    if (a.has("json")) print("{\"ok\":true,\"sent\":" + std::to_string(sent) + ",\"queued\":" + std::to_string(queued) + ",\"flushed\":" + std::to_string(flushed) + "}\n");
+    else print(lines + std::to_string(sent) + " publié(s), " + std::to_string(queued) + " en attente, " + std::to_string(flushed) + " envoyé(s) depuis la file d'attente.\n"
+               + (queued ? "Relancez nemo-push --flush quand le réseau est revenu.\n" : ""));
+}
+void cmd_nemo_mastery(const Args& a) {
+    auto root = workspace_folder(a);
+    auto remote = nemo::load_remote(root);
+    nemo::need_remote(remote);
+    auto token = nemo::checked_token();
+    auto ideas = nemo::ideas_of(map_path(a));
+    std::vector<std::string> titles;
+    std::set<std::string> seen;
+    for (const auto& idea : ideas) if (seen.insert(idea.title).second) titles.push_back(idea.title);
+    auto known = nemo::lookup_mastery(remote, token, titles);
+    auto status_of = [&](const std::string& title) { auto it = known.find(title); return it == known.end() ? nemo::Mastery{} : it->second; };
+    static const std::map<std::string, std::string> icons = {{"acquis", "✓"}, {"a-revoir", "↻"}, {"en-cours", "…"}, {"inconnu", "·"}};
+    if (a.has("json")) {
+        std::string out = "{\"ok\":true,\"ideas\":[";
+        for (size_t i = 0; i < ideas.size(); ++i) {
+            auto m = status_of(ideas[i].title);
+            out += (i ? "," : "") + std::string("{\"file\":") + quote(workspace::path_text(ideas[i].file)) + ",\"id\":" + std::to_string(ideas[i].id) + ",\"title\":" + quote(ideas[i].title)
+                + ",\"status\":" + quote(m.status) + ",\"box\":" + std::to_string(m.box) + (m.next.empty() ? "" : ",\"nextReviewAt\":" + quote(m.next)) + "}";
+        }
+        print(out + "]}\n");
+        return;
+    }
+    std::string out, current;
+    size_t counts[4] = {0, 0, 0, 0};
+    for (const auto& idea : ideas) {
+        if (workspace::path_text(idea.file) != current) { current = workspace::path_text(idea.file); out += "\n" + current + "\n"; }
+        auto m = status_of(idea.title);
+        out += "  " + icons.at(m.status) + " [" + std::to_string(idea.id) + "] " + idea.title + (m.status == "inconnu" ? "" : "   (" + m.status + ", boîte " + std::to_string(m.box) + ")") + "\n";
+        counts[m.status == "acquis" ? 0 : m.status == "a-revoir" ? 1 : m.status == "en-cours" ? 2 : 3]++;
+    }
+    print(out + "\n" + std::to_string(counts[0]) + " acquise(s) ✓ · " + std::to_string(counts[1]) + " à revoir ↻ · " + std::to_string(counts[2]) + " en cours … · " + std::to_string(counts[3]) + " inconnue(s) ·\n"
+          + "(Lecture seule : vos repères posés à la main ne sont jamais modifiés.)\n");
 }
 void cmd_import_course(const Args& a) {
     auto file = map_path(a);
@@ -480,8 +585,13 @@ const std::vector<Command>& commands() {
         {"Créer / modifier une carte", "unlink", "unlink <carte> --from ID --to ID", "supprime un lien", edit<do_unlink>},
         {"Créer / modifier une carte", "batch", "batch <carte> [--from ops.json|-]", "plusieurs modifications, une seule écriture, tout ou rien (voir docs/CLI.md)", cmd_batch},
         {"Cours et Nemo", "import-course", "import-course <carte> [--from cours.md|-] [--split N] [--title T]", "crée une carte (et N niveaux de sous-cartes) depuis un cours en Markdown ou texte", cmd_import_course},
-        {"Cours et Nemo", "nemo-config", "nemo-config [--courses <dossier>]", "dossier des cours que Nemo synchronise (affiché si aucune option)", cmd_nemo_config},
-        {"Cours et Nemo", "nemo-export", "nemo-export <carte> [--to <dossier>]", "écrit toute la hiérarchie en un cours Markdown « <titre> (carte mentale).md » que Nemo peut lire", cmd_nemo_export},
+        {"Cours et Nemo", "nemo-config", "nemo-config [--courses <dossier>] [--auto-export on|off]", "dossier des cours que Nemo synchronise ; export automatique à l'enregistrement dans l'application (affiché si aucune option)", cmd_nemo_config},
+        {"Cours et Nemo", "nemo-export", "nemo-export <carte>|--all <dossier de cartes> [--to <dossier>]", "écrit toute la hiérarchie en un cours Markdown « <titre> (carte mentale).md » que Nemo peut lire ; --all exporte toutes les cartes racines d'un dossier ; un ancien fichier d'une carte renommée est remplacé", cmd_nemo_export},
+        {"Cours et Nemo (réseau, facultatif)", "nemo-remote", "nemo-remote [--url https://…] [--subject S] [--folder cartes] [--scope personal|class]", "adresse de Nemo et matière de destination (affichés si aucune option)", cmd_nemo_remote},
+        {"Cours et Nemo (réseau, facultatif)", "nemo-login", "echo JETON | nemo-login", "enregistre le jeton dans le Gestionnaire d'identification Windows", cmd_nemo_login},
+        {"Cours et Nemo (réseau, facultatif)", "nemo-logout", "nemo-logout", "supprime le jeton enregistré", cmd_nemo_logout},
+        {"Cours et Nemo (réseau, facultatif)", "nemo-push", "nemo-push <carte>|--all <dossier>|--flush", "publie le cours directement sur Nemo (sans démon de synchronisation) ; file d'attente hors-ligne ; supprime l'ancien cours d'une carte renommée", cmd_nemo_push},
+        {"Cours et Nemo (réseau, facultatif)", "nemo-mastery", "nemo-mastery <carte> [--json]", "ce que Nemo sait de chaque idée : ✓ acquis, ↻ à revoir, … en cours, · inconnu (lecture seule)", cmd_nemo_mastery},
         {"Sous-cartes (une idée peut contenir une autre carte, qui peut elle-même en contenir…)", "submap-new", "submap-new <carte> --id ID [--title T] [--outline plan.md|-]", "crée <carte>/<idée>.mindmap et le relie à l'idée", edit<do_submap_new>},
         {"Sous-cartes (une idée peut contenir une autre carte, qui peut elle-même en contenir…)", "submap-attach", "submap-attach <carte> --id ID --file chemin/relatif.mindmap", "relie une carte existante (dans le dossier de la carte)", edit<do_submap_attach>},
         {"Sous-cartes (une idée peut contenir une autre carte, qui peut elle-même en contenir…)", "submap-detach", "submap-detach <carte> --id ID", "détache la sous-carte (le fichier est conservé)", edit<do_submap_detach>},

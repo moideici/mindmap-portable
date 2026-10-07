@@ -27,7 +27,7 @@ constexpr UINT autosave_timer = 1, smoke_timer = 2;
 enum Command { New=100, Open, Save, SaveAs, Add, Sibling, Delete, Duplicate, Undo, Redo, Layout, Fit,
     Collapse, ExportPng, ExportSvg, ExportMd, Apply, Help, ImportOutline, PasteOutline, CopyBranch,
     LayoutRight, LayoutBalanced, LayoutRadial, ToggleNotes, ToggleMinimap, ToggleDark, LinkMode,
-    CustomColor, GlobalSearch, ExportCourse, ExportNemo,
+    CustomColor, GlobalSearch, ExportCourse, ExportNemo, AutoNemo,
     DeleteLink, ReverseLink, SelectRoot, Home, AddImage, RemoveImage, ExportPdf, SaveTemplate, RestoreVersions, RecoverLegacy, BrowseDrafts, DeleteDraft,
     OpenSubmap, CreateSubmap, DetachSubmap, UpSubmap,
     Color0=150, Marker0=170, LinkLabel0=190, LinkRow0=220, LinkRowDelete0=240,
@@ -803,8 +803,28 @@ public:
         store.save_named(path,data,expected,true);current_file=path;disk_snapshot=data;dirty=false;retry_save_at=0;autosave_pending=false;
         store.forget_draft(draft_file);draft_file.clear();
         status=L"Carte enregistrée · "+path.wstring();
+        publish_to_nemo(path);
         try{store.opened(path);}catch(const std::exception& e){status+=L" · liste des cartes non enregistrée : "+wide(e.what());}
         update_caption();repaint();return true;
+    }
+    // Optional (File > Publier vers Nemo à l'enregistrement) : a MANUAL save also rewrites the Markdown course in the folder Nemo
+    // synchronises. Never on autosave (it would flood Nemo's change history), never over the network, never an error for the save itself.
+    void publish_to_nemo(const fs::path& path){
+        try{
+            if(!nemo::auto_export(directory))return;
+            auto folder=nemo::courses_folder(directory);
+            if(folder.empty()||!fs::is_directory(folder))return;
+            nemo::export_tracked(directory,path,folder);
+            status+=L" · cours Nemo mis à jour";
+        }catch(const std::exception& e){status+=L" · cours Nemo non mis à jour : "+wide(e.what());}
+    }
+    void toggle_auto_nemo(){
+        try{
+            auto on=!nemo::auto_export(directory);
+            nemo::set_auto_export(directory,on);
+            status=on?L"Les enregistrements manuels (Ctrl+S) mettent aussi à jour le cours Nemo.":L"Publication vers Nemo à l’enregistrement désactivée.";
+        }catch(const std::exception& e){status=L"Publication Nemo : "+wide(e.what())+L" (exportez d’abord une fois pour choisir le dossier)";}
+        repaint();
     }
     bool may_replace(){
         if(!commit_edit())return false;
@@ -1079,6 +1099,7 @@ public:
         AppendMenuW(menu,MF_SEPARATOR,0,nullptr);
         item(ExportPdf,L"Exporter en PDF (A4 paysage)…");item(ExportPng,L"Exporter une image PNG…");item(ExportSvg,L"Exporter en SVG…");item(ExportMd,L"Exporter le plan Markdown…");
         item(ExportCourse,L"Exporter le cours complet (sous-cartes comprises)…");item(ExportNemo,L"Exporter pour Nemo…");
+        AppendMenuW(menu,MF_STRING|(nemo::auto_export(directory)?MF_CHECKED:0),AutoNemo,L"Publier vers Nemo à l’enregistrement (Ctrl+S)");
         if(int result=popup(menu,at))command(result);
     }
     void view_menu(POINT at){
@@ -1234,6 +1255,7 @@ public:
             return true;
         }
         if(id==ExportNemo){export_nemo();return true;}
+        if(id==AutoNemo){toggle_auto_nemo();return true;}
         if(id==ExportCourse){
             if(current_file.empty()){status=L"Enregistrez d’abord cette carte pour exporter son cours complet.";repaint();return true;}
             checkpoint();
