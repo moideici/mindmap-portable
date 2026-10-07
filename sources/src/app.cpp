@@ -16,6 +16,7 @@
 #include "history.hpp"
 #include "workspace.hpp"
 #include "imports.hpp"
+#include "submaps.hpp"
 #include "pdf.hpp"
 
 using namespace Gdiplus;
@@ -28,6 +29,7 @@ enum Command { New=100, Open, Save, SaveAs, Add, Sibling, Delete, Duplicate, Und
     LayoutRight, LayoutBalanced, LayoutRadial, ToggleNotes, ToggleMinimap, ToggleDark, LinkMode,
     Revision, RevealNext, RevealAll, RevisionRestart, RevisionReview, RevisionStop, CustomColor,
     DeleteLink, ReverseLink, SelectRoot, Home, AddImage, RemoveImage, ExportPdf, SaveTemplate, RestoreVersions, RecoverLegacy, BrowseDrafts, DeleteDraft,
+    OpenSubmap, CreateSubmap, DetachSubmap, UpSubmap,
     Color0=150, Marker0=170, LinkLabel0=190, LinkRow0=220, LinkRowDelete0=240,
     BrowseTemplates=500, BrowseRecent=501, Template0=600, Recent0=700, Draft0=720, CustomTemplate0=800, Restore0=900 };
 constexpr int search_id=401, title_id=402, note_id=403;
@@ -179,6 +181,8 @@ std::optional<std::wstring> ask_text(HWND owner,const wchar_t* caption,const wch
 }
 
 struct Button { RectF rect; int command; };
+// One step of the path taken through nested maps: the parent file and the idea that held the sub-map.
+struct Crumb { fs::path file; std::wstring title; long long node; };
 struct PictureStream {
     IStream* value=nullptr;
     ~PictureStream(){if(value)value->Release();}
@@ -212,7 +216,8 @@ public:
     double minimap_scale=1, minimap_left=0, minimap_top=0;
     int outline_scroll=0, selected_link=-1, hovered_link=-1;
     bool updating=false, pending_edit=false, dirty=false, autosave_pending=false, dragging=false, panning=false, minimap_drag=false, moved=false, smoke=false;
-    bool linking=false, revising=false, tooltip=false, tracking_mouse=false;
+    bool linking=false, revising=false, tooltip=false, tracking_mouse=false, navigating=false;
+    std::vector<Crumb> trail;
     ULONGLONG retry_save_at=0, hover_since=0;
     long long drag_id=0, link_from=0, hovered=0, revision_root=1;
     std::set<long long> scope, revealed;
@@ -510,6 +515,11 @@ public:
                 SolidBrush fillb(rgb(info.color));Pen ring(t.node,2*z);g.FillEllipse(&fillb,badge);g.DrawEllipse(&ring,badge);
                 text(g,wide(info.glyph),RectF(badge.X,badge.Y+0.5f*z,badge.Width,badge.Height),12*z,Color(255,255,255,255),Bold|Center|Symbol);
             }
+            if(doc.submaps.count(id)){
+                RectF tag(r.GetRight()-17*z,r.Y-5*z,22*z,22*z);
+                SolidBrush fillb(rgb(n->color));Pen ring(t.node,2*z);g.FillEllipse(&fillb,tag);g.DrawEllipse(&ring,tag);
+                text(g,L"▶",RectF(tag.X+1*z,tag.Y+0.5f*z,tag.Width,tag.Height),9*z,Color(255,255,255,255),Bold|Center|Symbol);
+            }
             if(!n->children.empty()){
                 auto anchor=at(toggle_anchor(doc,id,b));
                 std::wstring sign=n->collapsed?L"+"+std::to_wstring(doc.map->descendants(id).size()-1):L"−";
@@ -610,21 +620,25 @@ public:
         button(g,x+168,390,74,linking?L"Annuler":L"+ Relier",LinkMode,false,linking,true,24);
         link_rows.clear();
         for(size_t i=0;i<state.links.size();++i)if(state.links[i].from==state.selected||state.links[i].to==state.selected)link_rows.push_back(i);
-        for(size_t row=0;row<std::min<size_t>(3,link_rows.size());++row){
+        for(size_t row=0;row<std::min<size_t>(2,link_rows.size());++row){
             const auto& l=state.links[link_rows[row]];
-            RectF r(x,420+row*27.0f,242,25);
-            if(row==2&&link_rows.size()>3){text(g,L"+ "+std::to_wstring(link_rows.size()-2)+L" autres liens (voir la carte)",r,11,t.subtle);break;}
+            RectF r(x,418+row*24.0f,242,22);
+            if(row==1&&link_rows.size()>2){text(g,L"+ "+std::to_wstring(link_rows.size()-1)+L" autres liens (voir la carte)",r,11,t.subtle);break;}
             const bool chosen=static_cast<int>(link_rows[row])==selected_link;
             panel(g,r,chosen?t.row:t.button,Color(0,0,0,0),6);
-            buttons.push_back({RectF(x,r.Y,214,25),static_cast<int>(LinkRow0+row)});
-            buttons.push_back({RectF(x+216,r.Y,26,25),static_cast<int>(LinkRowDelete0+row)});
+            buttons.push_back({RectF(x,r.Y,214,22),static_cast<int>(LinkRow0+row)});
+            buttons.push_back({RectF(x+216,r.Y,26,22),static_cast<int>(LinkRowDelete0+row)});
             const bool outgoing=l.from==state.selected;
             std::wstring caption=(outgoing?L"→ ":L"← ")+wide(state.map->nodes.at(outgoing?l.to:l.from)->title);
             if(!l.label.empty())caption+=L"  ·  "+wide(l.label);
-            text(g,caption,RectF(x+8,r.Y,206,25),11,t.link);
-            text(g,L"×",RectF(x+216,r.Y,26,25),14,t.subtle,Center);
+            text(g,caption,RectF(x+8,r.Y,206,22),11,t.link);
+            text(g,L"×",RectF(x+216,r.Y,26,22),14,t.subtle,Center);
         }
         if(link_rows.empty())text(g,L"Aucun lien · L puis clic sur une autre idée",RectF(x,420,242,25),11,t.subtle);
+        if(state.submaps.count(state.selected)){
+            button(g,x,467,166,L"▶ Ouvrir la sous-carte",OpenSubmap,true,false,true,22);
+            button(g,x+170,467,72,L"Détacher",DetachSubmap,false,false,true,22);
+        }else button(g,x,467,242,L"+ Créer une sous-carte",CreateSubmap,false,false,state.selected!=1,22);
         text(g,L"Notes",RectF(x,500,80,20),12,t.text,Bold);
         button(g,x+76,493,116,state.pictures.count(state.selected)?L"Changer l’image":L"+ Image / schéma",AddImage,false,false,true,26);
         if(state.pictures.count(state.selected))button(g,x+198,493,44,L"×",RemoveImage,false,false,true,26);
@@ -764,6 +778,11 @@ public:
             :revising?L"Espace : révéler la suivante   ·   2 : acquis   ·   3 : à revoir   ·   Échap : terminer"
             :L"Tab : enfant   Entrée : même niveau   Flèches : naviguer   1-5 : repères   L : relier   R : réviser";
         text(g,hint,RectF(canvas.X+12,canvas.GetBottom()-26,canvas.Width-24,24),10,t.subtle,Center);
+        if(!trail.empty()){
+            std::wstring path;for(const auto& c:trail)path+=c.title+L"  ›  ";path+=wide(state.map->nodes.at(1)->title);
+            button(g,canvas.X+10,canvas.Y+8,104,L"↑ Remonter",UpSubmap,false,false,true,28);
+            text(g,path,RectF(canvas.X+122,canvas.Y+8,std::max(60.0f,canvas.Width-132),28),12,t.subtle);
+        }
         panel(g,RectF(width-286,132,270,height-177),t.panel,t.border,12);
         if(revising)paint_revision(g);else paint_inspector(g);
         std::wstring count=std::to_wstring(state.map->nodes.size())+L" idées  •  "+std::to_wstring(state.links.size())+L" liens  •  "+std::to_wstring(static_cast<int>(state.zoom*100))+L" %";
@@ -805,7 +824,7 @@ public:
         checkpoint();return true;
     }
     void loaded_document(bool is_dirty){
-        stop_revision();linking=false;selected_link=-1;
+        stop_revision();linking=false;selected_link=-1;if(!navigating)trail.clear();
         updating=true;SetWindowTextW(search,L"");updating=false;outline_scroll=0;retry_save_at=0;
         home=false;show_editors(true);picture_cache.clear();
         history.clear();dirty=is_dirty;autosave_pending=true;refresh_inspector();refresh_outline();update_caption();repaint();
@@ -841,9 +860,41 @@ public:
         }
         autosave_pending=false;update_caption();repaint();
     }
+    // Sub-maps: each is an ordinary .mindmap file next to the parent; trail remembers the way back up.
+    void open_submap(){
+        auto it=state.submaps.find(state.selected);
+        if(it==state.submaps.end()){create_submap();return;}
+        if(!may_replace())return;
+        if(current_file.empty()){status=L"Enregistrez d’abord cette carte pour ouvrir ses sous-cartes.";repaint();return;}
+        auto child=submap::resolve(current_file,it->second);
+        if(!fs::exists(child))throw std::runtime_error("Sous-carte introuvable : "+workspace::path_text(child)+"\nElle a peut-être été déplacée ou supprimée : détachez-la ou rétablissez le fichier.");
+        Crumb crumb{current_file,wide(state.map->nodes.at(1)->title),state.selected};
+        navigating=true;
+        try{open_path(child);}catch(...){navigating=false;throw;}
+        navigating=false;trail.push_back(std::move(crumb));fit();update_caption();repaint();
+    }
+    void up_submap(){
+        if(trail.empty()){status=L"Cette carte n’est pas une sous-carte ouverte depuis une autre.";repaint();return;}
+        if(!may_replace())return;
+        auto crumb=trail.back();trail.pop_back();
+        navigating=true;
+        try{open_path(crumb.file);}catch(...){navigating=false;trail.push_back(crumb);throw;}
+        navigating=false;
+        if(state.map->nodes.count(crumb.node)){select(crumb.node);ensure_visible(crumb.node);}
+        update_caption();repaint();
+    }
+    void create_submap(){
+        if(state.selected==1){status=L"Choisissez une idée (pas le sujet central) pour y créer une sous-carte.";repaint();return;}
+        if(current_file.empty()&&!save(true))return;
+        checkpoint();
+        auto before=document::encode(state);
+        auto file=submap::create(state,current_file,state.selected);
+        remember(std::move(before));changed(L"Sous-carte créée · "+file.filename().wstring());
+        checkpoint();open_submap();
+    }
     void show_editors(bool show){for(HWND control:{search,title,note})ShowWindow(control,show?SW_SHOW:SW_HIDE);}
     void refresh_home(){draft_cards=store.cards("drafts");custom_templates=store.cards("templates");}
-    void go_home(){if(!may_replace())return;stop_revision();home=true;autosave_pending=false;show_editors(false);refresh_home();update_caption();repaint();}
+    void go_home(){if(!may_replace())return;stop_revision();trail.clear();home=true;autosave_pending=false;show_editors(false);refresh_home();update_caption();repaint();}
     static std::string bitmap_bytes(Bitmap& image,const wchar_t* mime){
         UINT count=0,size=0;GetImageEncodersSize(&count,&size);std::vector<BYTE> codecs(size);
         auto* info=reinterpret_cast<ImageCodecInfo*>(codecs.data());GetImageEncoders(count,size,info);CLSID encoder{};bool found=false;
@@ -966,6 +1017,9 @@ public:
         }
         for(auto item:std::vector<std::pair<int,const wchar_t*>>{{Add,L"Ajouter une idée enfant\tTab"},{Sibling,L"Ajouter au même niveau\tEntrée"},{LinkMode,L"Relier à une autre idée…\tL"}})AppendMenuW(menu,MF_STRING,item.first,item.second);
         AppendMenuW(menu,MF_POPUP,reinterpret_cast<UINT_PTR>(markers),L"Repère");
+        if(state.submaps.count(state.selected)){AppendMenuW(menu,MF_STRING,OpenSubmap,L"Ouvrir la sous-carte\tO");AppendMenuW(menu,MF_STRING,DetachSubmap,L"Détacher la sous-carte");}
+        else if(state.selected!=1)AppendMenuW(menu,MF_STRING,CreateSubmap,L"Créer une sous-carte…\tO");
+        if(!trail.empty())AppendMenuW(menu,MF_STRING,UpSubmap,L"Remonter à la carte parente\tRetour arrière");
         AppendMenuW(menu,MF_SEPARATOR,0,nullptr);
         for(auto item:std::vector<std::pair<int,const wchar_t*>>{{Duplicate,L"Dupliquer la branche\tCtrl+D"},{CopyBranch,L"Copier la branche en texte\tCtrl+Maj+C"},{PasteOutline,L"Coller un plan ici\tCtrl+Maj+V"},{Collapse,L"Replier / ouvrir"},{Delete,L"Supprimer la branche\tSuppr"}})AppendMenuW(menu,MF_STRING,item.first,item.second);
         AppendMenuW(menu,MF_SEPARATOR,0,nullptr);
@@ -1124,6 +1178,14 @@ public:
             if(id==CopyBranch){set_clipboard_text(window,document::branch_markdown(state,state.selected));status=L"Branche copiée en texte : collez-la dans vos notes ou dans une autre carte (Ctrl+Maj+V).";repaint();return;}
             if(id==Fit){fit();return;}
             if(id==SelectRoot){select(1);ensure_visible(1);return;}
+            if(id==OpenSubmap){open_submap();return;}
+            if(id==UpSubmap){up_submap();return;}
+            if(id==CreateSubmap){create_submap();return;}
+            if(id==DetachSubmap){
+                if(!state.submaps.count(state.selected))return;
+                auto before=document::encode(state);state.submaps.erase(state.selected);remember(std::move(before));
+                changed(L"Sous-carte détachée · le fichier de la sous-carte est conservé");return;
+            }
             if(id==LinkMode){
                 linking=!linking;link_from=state.selected;selected_link=-1;
                 status=linking?L"Cliquez sur l’idée à relier à « "+wide(state.map->nodes.at(link_from)->title)+L" »":L"Liaison annulée";repaint();return;
@@ -1234,6 +1296,11 @@ public:
         if(target && !(GetKeyState(VK_SPACE)&0x8000)){
             if(revising&&masked(target))reveal(target);else select(target);
             auto n=state.map->nodes.at(target);
+            if(!revising&&state.submaps.count(target)){
+                // The ▶ badge on the top-right corner opens the sub-map.
+                auto b=document::box(state,target);auto pos=project(b.right(),b.top());
+                if(std::abs(point.X-(pos.X-6*state.zoom))<11*state.zoom&&std::abs(point.Y-(pos.Y+6*state.zoom))<11*state.zoom){command(OpenSubmap);return;}
+            }
             if(!n->children.empty()){
                 auto anchor=toggle_anchor(state,target);auto pos=project(anchor.x,anchor.y);
                 if(std::abs(point.X-pos.X)<15*state.zoom&&std::abs(point.Y-pos.Y)<11*state.zoom){command(Collapse);return;}
@@ -1375,6 +1442,21 @@ public:
             SetWindowTextW(title,L"Carte modifiée automatiquement");commit_edit();checkpoint();
             expect(document::decode(read_file(current_file)).map->nodes.at(1)->title=="Carte modifiée automatiquement","Sauvegarde automatique dans le fichier d'origine");
             expect(!store.versions(current_file).empty(),"Versions de secours absentes");
+            {
+                // Sub-maps: create from the selected idea, travel down, then back up to the same idea.
+                const auto parent_file=current_file;const auto parent_title=state.map->nodes.at(1)->title;const auto holder=id;
+                select(holder);command(CreateSubmap);
+                expect(trail.size()==1&&current_file!=parent_file&&current_file.parent_path().filename()==parent_file.stem(),"Sous-carte non ouverte");
+                expect(state.map->nodes.at(1)->title==document::decode(read_file(parent_file)).map->nodes.at(holder)->title,"Titre de la sous-carte");
+                command(Add);expect(state.map->nodes.size()==2,"Idée de sous-carte");SetWindowTextW(title,L"Chapitre de test");commit_edit();
+                capture(directory/L"test-sous-carte.png");
+                command(UpSubmap);
+                expect(trail.empty()&&current_file==parent_file&&state.selected==holder&&state.submaps.count(holder),"Retour à la carte parente");
+                {auto n=state.map->nodes.at(holder);state.zoom=1.2;state.pan_x=canvas.Width/2-n->x*state.zoom;state.pan_y=canvas.Height/2-n->y*state.zoom;}
+                capture(directory/L"test-carte-parente.png");
+                command(OpenSubmap);expect(trail.size()==1&&state.map->nodes.size()==2,"Réouverture de la sous-carte");
+                command(UpSubmap);select(1);
+            }
             store.custom_model("Mon modèle de test",state);go_home();expect(home&&!IsWindowVisible(title),"Accueil incorrect");capture(directory/L"test-accueil.png");
             atomic_write(directory/L"smoke-test-report.json","{\"ok\":true,\"nodes\":"+std::to_string(state.map->nodes.size())+",\"links\":"+std::to_string(state.links.size())
                 +",\"gdi_before\":"+std::to_string(handles)+",\"gdi_after\":"+std::to_string(after)
@@ -1506,7 +1588,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE,LPWSTR,int show){
                         if(key>='0'&&key<='5')action=ui::Marker0+static_cast<int>(key-'0');
                         else if(key>=VK_NUMPAD0&&key<=VK_NUMPAD5)action=ui::Marker0+static_cast<int>(key-VK_NUMPAD0);
                         else switch(key){case VK_TAB:action=ui::Add;break;case VK_RETURN:action=ui::Sibling;break;case VK_DELETE:action=ui::Delete;break;case 'F':action=ui::Fit;break;
-                            case 'L':action=ui::LinkMode;break;case 'N':action=ui::ToggleNotes;break;case 'M':action=ui::ToggleMinimap;break;case 'R':action=ui::Revision;break;
+                            case 'L':action=ui::LinkMode;break;case 'N':action=ui::ToggleNotes;break;case 'M':action=ui::ToggleMinimap;break;case 'R':action=ui::Revision;break;case 'O':action=ui::OpenSubmap;break;case VK_BACK:action=ui::UpSubmap;break;
                             case VK_SPACE:if(app.revising)action=ui::RevealNext;break;case VK_HOME:action=ui::SelectRoot;break;
                             case VK_LEFT:app.navigate(-1,0);continue;case VK_RIGHT:app.navigate(1,0);continue;
                             case VK_UP:app.navigate(0,-1);continue;case VK_DOWN:app.navigate(0,1);continue;

@@ -6,6 +6,11 @@ Carte mentale pour Windows, pensée pour réviser : **un seul fichier `MindMap.e
 
 Téléchargez l'exécutable dans les [Releases](../../releases) ou compilez-le (voir plus bas). La version 3 des sources ouvre un **accueil** avec vos cartes récentes, vos brouillons et vos modèles. Une carte enregistrée est sauvegardée automatiquement dans son propre fichier.
 
+## Sous-cartes et pilotage par une IA
+
+- **Sous-cartes** : une idée peut contenir une autre carte (histoire → thème 1 → chapitre 1…), à n'importe quel niveau. Chaque carte reste un fichier `.mindmap` ; l'idée porte un badge ▶. **O** ou un clic sur le badge ouvre la sous-carte (ou propose de la créer), **Retour arrière** ou « ↑ Remonter » revient, un fil d'Ariane montre le chemin. Les sous-cartes sont créées à côté de la carte parente, dans un dossier du même nom.
+- **`mindmap-cli.exe`** : version en ligne de commande, sans fenêtre, pour que des IA ou des scripts **créent, lisent et modifient** des cartes et leurs sous-cartes (`show --json`, `add`, `add-outline`, `set`, `submap-new`, `validate`…). Guide complet : [docs/CLI.md](docs/CLI.md).
+
 ## Nouveautés de la version 3
 
 - **Accueil** : créer une carte, ouvrir, importer, reprendre une carte récente ou un brouillon.
@@ -32,7 +37,7 @@ Les captures ci-dessous montrent l'interface de la version 2 ; l'accueil et les 
 | 9 | **Mini-carte** | Vue d'ensemble cliquable en bas à droite (M) |
 | 10 | **Thème sombre** | Interface, carte et barre de titre Windows |
 
-Les cartes des versions 1 et 2 restent lisibles. Les nouveaux fichiers utilisent le format `version 3`, qui ajoute les images intégrées.
+Les cartes des versions 1 et 2 restent lisibles. Les nouveaux fichiers utilisent le format `version 3`, qui ajoute les images intégrées ; une carte qui contient des sous-cartes est écrite en `version 4`.
 
 | Thème sombre, disposition radiale | Mode révision |
 |---|---|
@@ -133,7 +138,7 @@ cmake --build sources/build
 ctest --test-dir sources/build --output-on-failure
 ```
 
-`sources/build/MindMap.exe --smoke-test` exerce l'interface de bout en bout (édition, liens, repères, dispositions, révision, exports) et écrit un rapport et des captures dans `sources/build/`. MSVC ne convient pas : le C++ généré utilise des extensions GCC.
+`sources/build/mindmap-cli.exe` (ligne de commande) est construit en même temps, et `ctest` le teste de bout en bout. `sources/build/MindMap.exe --smoke-test` exerce l'interface de bout en bout (édition, liens, repères, dispositions, révision, exports) et écrit un rapport et des captures dans `sources/build/`. MSVC ne convient pas : le C++ généré utilise des extensions GCC.
 
 L'historique détaillé de la version 1 et les retours sur py2x sont dans **RAPPORT_COMPLET.md**.
 

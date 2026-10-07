@@ -213,7 +213,26 @@ struct State {
     std::vector<Link> links;
     std::map<long long, int> markers;
     std::map<long long, Picture> pictures;
+    // Sub-maps: idea id -> path of another .mindmap, relative to this file's folder ('/' separators, UTF-8).
+    std::map<long long, std::string> submaps;
 };
+constexpr size_t max_submap_path = 1024;
+// Relative, without '..' or drive letters: a sub-map always lives next to or below its parent map.
+inline bool valid_submap_path(const std::string& p) {
+    constexpr std::string_view suffix = ".mindmap";
+    if (p.empty() || p.size() > max_submap_path || p.front() == '/' || p.find('\\') != std::string::npos
+        || p.find('\0') != std::string::npos || p.find(':') != std::string::npos) return false;
+    if (p.size() <= suffix.size() || p.compare(p.size() - suffix.size(), suffix.size(), suffix) != 0) return false;
+    size_t at = 0;
+    for (;;) {
+        auto end = p.find('/', at);
+        if (end == std::string::npos) end = p.size();
+        auto part = p.substr(at, end - at);
+        if (part.empty() || part == "." || part == "..") return false;
+        if (end == p.size()) return true;
+        at = end + 1;
+    }
+}
 inline int marker_of(const State& state, long long id) {
     auto it = state.markers.find(id);
     return it == state.markers.end() ? 0 : it->second;
@@ -224,6 +243,7 @@ inline void prune(State& state) {
     std::erase_if(state.links, [&](const Link& l) { return !nodes.count(l.from) || !nodes.count(l.to) || l.from == l.to; });
     std::erase_if(state.markers, [&](const auto& m) { return !nodes.count(m.first) || m.second <= 0 || m.second >= marker_count; });
     std::erase_if(state.pictures, [&](const auto& p) { return !nodes.count(p.first); });
+    std::erase_if(state.submaps, [&](const auto& p) { return !nodes.count(p.first); });
 }
 inline bool add_link(State& state, long long from, long long to, const std::string& label = "") {
     if (from == to) throw std::runtime_error("Une idée ne peut pas être reliée à elle-même");
@@ -237,7 +257,7 @@ inline bool add_link(State& state, long long from, long long to, const std::stri
 inline std::string encode(const State& state) {
     std::ostringstream out;
     out.imbue(std::locale::classic());
-    out << std::setprecision(17) << "{\"format\":\"mindmap-portable\",\"version\":3,\"next_id\":" << state.map->next_id
+    out << std::setprecision(17) << "{\"format\":\"mindmap-portable\",\"version\":" << (state.submaps.empty() ? 3 : 4) << ",\"next_id\":" << state.map->next_id
         << ",\"selected\":" << state.selected << ",\"view\":{\"zoom\":" << state.zoom << ",\"x\":" << state.pan_x << ",\"y\":" << state.pan_y
         << ",\"layout\":" << state.layout << ",\"notes\":" << (state.show_notes ? "true" : "false")
         << ",\"dark\":" << (state.dark ? "true" : "false") << ",\"minimap\":" << (state.minimap ? "true" : "false") << "},\"nodes\":[";
@@ -252,6 +272,7 @@ inline std::string encode(const State& state) {
             << ",\"color\":" << n->color << ",\"collapsed\":" << (n->collapsed ? "true" : "false");
         if (int marker = marker_of(state, id)) out << ",\"marker\":" << marker;
         if(auto p=state.pictures.find(id);p!=state.pictures.end())out<<",\"picture\":"<<quote(p->second.data);
+        if(auto p=state.submaps.find(id);p!=state.submaps.end())out<<",\"submap\":"<<quote(p->second);
         out << '}';
     }
     out << "],\"links\":[";
@@ -270,7 +291,7 @@ inline State decode(const std::string& input) {
     if (j.at("format").text() != "mindmap-portable")
         throw std::runtime_error("Format ou version non pris en charge");
     // Version 1 files (before links, markers and layouts) still open unchanged.
-    const auto version = j.at("version").integer(1, 3);
+    const auto version = j.at("version").integer(1, 4);
     auto optional = [](const Json& owner, const char* name) -> const Json* {
         auto it = owner.object.find(name);
         return owner.kind == Json::Object && it != owner.object.end() ? &it->second : nullptr;
@@ -296,6 +317,11 @@ inline State decode(const std::string& input) {
         }
         result.map->nodes[id] = n;
         if(auto picture=optional(item,"picture"))result.pictures[id]=picture_from_png(unbase64(picture->text()));
+        if(auto submap=optional(item,"submap")){
+            auto path=submap->text();
+            if(!valid_submap_path(path))throw std::runtime_error("Chemin de sous-carte invalide");
+            result.submaps[id]=path;
+        }
         max_id = std::max(max_id, id);
     }
     if (!result.map->nodes.count(1) || result.map->nodes.at(1)->parent != -1) throw std::runtime_error("Sujet central absent");

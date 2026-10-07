@@ -1,6 +1,7 @@
 #include "../src/workspace.hpp"
 #include "../src/imports.hpp"
 #include "../src/pdf.hpp"
+#include "../src/submaps.hpp"
 #include <cstdio>
 #include <source_location>
 #ifdef _WIN32
@@ -67,6 +68,45 @@ int main(int argc,char** argv){
         auto moved=folder/"copy";workspace::fs::create_directories(moved/".mindmap-data");workspace::fs::copy_file(file,moved/file.filename());workspace::fs::copy_file(store.data()/"workspace.json",moved/".mindmap-data"/"workspace.json");
         workspace::Store portable(moved);portable.load();CHECK(portable.recent[0]==moved/file.filename());
 
+        // Sub-maps: history -> theme -> chapter, each an ordinary file referenced by a relative path.
+        {
+            for(const char* good:{"a.mindmap","dossier/a.mindmap","Thème 1/Chapitre é.mindmap"})CHECK(document::valid_submap_path(good));
+            for(const char* bad:{"","a.txt","../a.mindmap","a/../b.mindmap","/a.mindmap","C:/a.mindmap","a\\b.mindmap","a//b.mindmap","./a.mindmap",".mindmap","a/.mindmap/"})CHECK(!document::valid_submap_path(bad));
+            const auto root=folder/"histoire";workspace::fs::create_directories(root);
+            const auto main_file=root/"Histoire.mindmap";
+            document::State history_map;history_map.map->nodes.at(1)->title="Histoire";
+            auto theme_node=history_map.map->add(1,"Thème 1 : l'Europe");history_map.map->add(1,"Thème 2");
+            CHECK(document::encode(history_map).find("\"version\":3")!=std::string::npos);
+            rejects([&]{submap::create(history_map,{},theme_node);});
+            rejects([&]{submap::create(history_map,main_file,1);});
+            rejects([&]{submap::create(history_map,main_file,999);});
+            auto theme_file=submap::create(history_map,main_file,theme_node,"# Autre titre\n- Chapitre 1\n  - 1789\n- Chapitre 2\n");
+            CHECK(theme_file.parent_path()==root/"Histoire"&&workspace::fs::exists(theme_file));
+            CHECK(history_map.submaps.at(theme_node)==submap::relative_path(main_file,theme_file));
+            rejects([&]{submap::create(history_map,main_file,theme_node);});
+            submap::store(main_file,history_map);CHECK(document::encode(history_map).find("\"version\":4")!=std::string::npos);
+            auto reread=submap::load(main_file);CHECK(reread.submaps==history_map.submaps);
+            auto theme=submap::load(theme_file);CHECK(theme.map->nodes.at(1)->title=="Thème 1 : l'Europe"&&theme.map->nodes.size()==4);
+            auto chapter_node=theme.map->nodes.at(1)->children[0];
+            auto chapter_file=submap::create(theme,theme_file,chapter_node);submap::store(theme_file,theme);
+            CHECK(chapter_file.parent_path()==root/"Histoire"/"Thème 1 _ l'Europe");
+            auto list=submap::hierarchy(main_file);CHECK(list.size()==3&&list[0].depth==0&&list[1].depth==1&&list[2].depth==2&&list[2].title=="Chapitre 1");
+            for(const auto& entry:list)CHECK(entry.status==submap::Status::Ok);
+            auto deep=submap::deep_markdown(main_file);CHECK(deep.find("- Thème 1 : l'Europe\n  - Chapitre 1\n    - 1789\n  - Chapitre 2\n")!=std::string::npos);
+            // Loops, escapes and missing files are refused or reported, never followed forever.
+            rejects([&]{submap::attach(theme,theme_file,theme.map->nodes.at(1)->children[1],main_file);});
+            auto sibling=root/"Histoire"/"Loop.mindmap";document::State loop_map;loop_map.map->nodes.at(1)->title="Boucle";auto holder=loop_map.map->add(1,"Retour");
+            submap::store(sibling,loop_map);
+            auto theme2=submap::load(theme_file);submap::attach(theme2,theme_file,theme2.map->nodes.at(1)->children[1],sibling);submap::store(theme_file,theme2);
+            auto looping=submap::load(sibling);rejects([&]{submap::attach(looping,sibling,holder,theme_file);});
+            rejects([&]{submap::attach(history_map,main_file,history_map.map->nodes.at(1)->children[1],folder/"francais.mindmap");});
+            workspace::fs::remove(chapter_file);list=submap::hierarchy(main_file);bool missing=false;for(const auto& entry:list)missing|=entry.status==submap::Status::Missing;CHECK(missing);
+            CHECK(submap::deep_markdown(main_file).find("introuvable")!=std::string::npos);
+            // A hand-edited file cannot smuggle a path outside the folder tree.
+            auto hostile=document::encode(history_map);hostile.replace(hostile.find("Histoire/"),9,"../x/Histo");rejects([&]{document::decode(hostile);});
+            CHECK(submap::slug("CON")=="_CON"&&submap::slug("a/b:c?")=="a_b_c_"&&submap::slug("  ")=="Sous-carte"&&submap::slug("fin...")=="fin");
+            document::State pruned=history_map;pruned.map->remove(theme_node);document::prune(pruned);CHECK(pruned.submaps.empty());
+        }
         for(const std::string& raw:std::vector<std::string>{"", "a", "ab", "abc", "abcd",std::string("\0\xff\x80",3)})CHECK(document::unbase64(document::base64(raw))==raw);
         for(const std::string bad:{"a","!!!!","====","a===","YQ=A","YQ==YQ==","YR==","YWJ="})rejects([&]{document::unbase64(bad);});
         const auto png=workspace::read(workspace::text_path(__FILE__).parent_path()/"fixtures"/"pixel.png");

@@ -43,6 +43,7 @@ jobs:
           name: MindMap-Windows
           path: |
             sources/build/MindMap.exe
+            sources/build/mindmap-cli.exe
             sources/build/smoke/test-*.png
             sources/build/smoke/test-carte.pdf
             sources/build/smoke/smoke-test-report.json

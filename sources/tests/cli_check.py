@@ -1,0 +1,82 @@
+"""Bout en bout de mindmap-cli : création, édition, sous-cartes imbriquées, boucles et erreurs.
+Usage : python cli_check.py <mindmap-cli.exe>  (dossier de test volontairement accentué)"""
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+CLI = str(Path(sys.argv[1]).resolve())
+failures = []
+
+
+def run(*args, stdin=None, expect=0):
+    done = subprocess.run([CLI, *map(str, args)], input=stdin.encode() if stdin else None, capture_output=True)
+    if done.returncode != expect:
+        failures.append(f"{args}: code {done.returncode} au lieu de {expect}\n{done.stderr.decode(errors='replace')}")
+    return done.stdout.decode(), done.stderr.decode(errors="replace")
+
+
+def check(condition, message):
+    if not condition:
+        failures.append(message)
+
+
+with tempfile.TemporaryDirectory(prefix="mindmap hist géo ") as tmp:
+    folder = Path(tmp)
+    main = folder / "Histoire.mindmap"
+    run("new", main, "--title", "Histoire")
+    out, _ = run("add", main, "--title", "Thème 1 : l'Europe", "--marker", "important", "--json")
+    theme_id = json.loads(out)["id"]
+    run("add", main, "--title", "Thème 2", "--note", "ligne 1\nligne 2", "--color", "#2e9e5b")
+    run("add", main, "--title", "", expect=2)
+    run("add", main, "--title", "Orpheline", "--parent", "999", expect=1)
+
+    out, _ = run("submap-new", main, "--id", theme_id, "--outline", "-", "--json",
+                 stdin="# x\n- Chapitre 1 : la Révolution\n  - 1789\n- Chapitre 2\n")
+    theme = folder / json.loads(out)["relative"]
+    check(theme.is_file() and theme.parent == folder / "Histoire", "sous-carte du thème absente ou mal placée")
+
+    out, _ = run("show", theme, "--json")
+    shown = json.loads(out)
+    check(shown["root"]["title"] == "Thème 1 : l'Europe", "le sujet de la sous-carte doit reprendre le titre de l'idée")
+    chapter_id = shown["root"]["children"][0]["id"]
+    run("submap-new", theme, "--id", chapter_id, "--outline", "-", stdin="- Causes\n- Conséquences\n")
+    run("submap-new", theme, "--id", chapter_id, expect=1)       # déjà une sous-carte
+    run("submap-new", main, "--id", 1, expect=1)                  # le sujet central n'en a pas
+
+    out, _ = run("tree", main, "--json")
+    maps = json.loads(out)["maps"]
+    check([m["depth"] for m in maps] == [0, 1, 2], f"hiérarchie inattendue : {maps}")
+    check(all(m["status"] == "ok" for m in maps), "toutes les cartes doivent être valides")
+    out, _ = run("outline", main, "--deep")
+    check("  - Chapitre 1 : la Révolution\n    - Causes\n    - Conséquences\n" in out.replace("    - 1789\n", ""), f"plan complet : {out}")
+
+    # Boucle : la carte du chapitre ne peut pas contenir l'une de ses ancêtres.
+    chapter = next(folder.rglob("Chapitre 1*.mindmap"))
+    run("submap-attach", chapter, "--id", 2, "--file", "../../Histoire.mindmap", expect=1)
+    run("submap-attach", main, "--id", 3, "--file", "../hors.mindmap", expect=1)
+
+    # Édition courante.
+    run("set", main, "--id", theme_id, "--marker", "revoir", "--title", "Thème 1 modifié")
+    run("link", main, "--from", 1, "--to", theme_id, "--label", "cause de")
+    run("link", main, "--from", 1, "--to", theme_id, expect=1)
+    run("unlink", main, "--from", 1, "--to", theme_id)
+    run("move", main, "--id", theme_id, "--parent", theme_id, expect=1)
+    run("set", main, "--id", theme_id, expect=2)                   # rien à modifier
+    run("remove", main, "--id", 1, expect=1)
+    out, _ = run("show", main)
+    check("Thème 1 modifié" in out and "sous-carte" in out, f"show : {out}")
+
+    # Fichier manquant => problème signalé, code 1.
+    chapter.unlink()
+    run("validate", main, expect=1)
+    run("submap-detach", theme, "--id", chapter_id)
+    run("validate", main)
+    run("show", folder / "absent.mindmap", expect=1)
+    run("nimporte-quoi", expect=2)
+
+if failures:
+    print("\n".join(failures))
+    sys.exit(1)
+print("mindmap-cli : PASS")
