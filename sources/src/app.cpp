@@ -12,6 +12,8 @@
 #include <optional>
 #include <set>
 #include <unordered_map>
+#include <atomic>
+#include <thread>
 #include "exports.hpp"
 #include "history.hpp"
 #include "workspace.hpp"
@@ -24,10 +26,12 @@ namespace fs = std::filesystem;
 
 namespace ui {
 constexpr UINT autosave_timer = 1, smoke_timer = 2;
+// Result of the background "nemo-mastery --cache" run: 0 idle, 1 running, 2 done, 3 failed (a global: the thread may outlive the window).
+std::atomic<int> mastery_job{0};
 enum Command { New=100, Open, Save, SaveAs, Add, Sibling, Delete, Duplicate, Undo, Redo, Layout, Fit,
     Collapse, ExportPng, ExportSvg, ExportMd, Apply, Help, ImportOutline, PasteOutline, CopyBranch,
     LayoutRight, LayoutBalanced, LayoutRadial, ToggleNotes, ToggleMinimap, ToggleDark, LinkMode,
-    CustomColor, GlobalSearch, ExportCourse, ExportNemo, AutoNemo,
+    CustomColor, GlobalSearch, ExportCourse, ExportNemo, AutoNemo, ToggleMastery, RefreshMastery,
     DeleteLink, ReverseLink, SelectRoot, Home, AddImage, RemoveImage, ExportPdf, SaveTemplate, RestoreVersions, RecoverLegacy, BrowseDrafts, DeleteDraft,
     OpenSubmap, CreateSubmap, DetachSubmap, UpSubmap,
     Color0=150, Marker0=170, LinkLabel0=190, LinkRow0=220, LinkRowDelete0=240,
@@ -196,6 +200,8 @@ public:
     HBRUSH edit_brush=nullptr;
     document::State state;
     fs::path directory, current_file;
+    std::map<std::string,std::string> mastery_cache;  // idea key -> acquis / a-revoir / en-cours (read from nemo-mastery.json)
+    bool mastery_badges=false;
     workspace::Store store;
     fs::path draft_file;
     std::string disk_snapshot;
@@ -436,6 +442,7 @@ public:
             }
             if(argv)LocalFree(argv);
         }
+        load_mastery();
         SetTimer(window,autosave_timer,200,nullptr);
         if(smoke) SetTimer(window,smoke_timer,600,nullptr);
     }
@@ -453,6 +460,8 @@ public:
         refresh_outline();repaint();
     }
     void draw_map(Graphics& g,const document::State& doc,RectF area,double zoom,double panx,double pany,bool interactive){
+        std::string mastery_prefix;
+        if(interactive&&mastery_badges&&!mastery_cache.empty()&&!current_file.empty())mastery_prefix=workspace::path_text(fs::absolute(current_file).lexically_normal())+"#";
         const Theme& t=interactive?colors():theme(false);
         const REAL z=static_cast<REAL>(zoom);
         // Grid-fitted text grows wider at small zooms; plain anti-aliasing scales linearly with the boxes.
@@ -528,6 +537,16 @@ public:
                 RectF tag(r.GetRight()-17*z,r.Y-5*z,22*z,22*z);
                 SolidBrush fillb(rgb(n->color));Pen ring(t.node,2*z);g.FillEllipse(&fillb,tag);g.DrawEllipse(&ring,tag);
                 text(g,L"▶",RectF(tag.X+1*z,tag.Y+0.5f*z,tag.Width,tag.Height),9*z,Color(255,255,255,255),Bold|Center|Symbol);
+            }
+            if(!mastery_prefix.empty()){
+                // What Nemo knows about this idea (read-only; refreshed from Affichage > Actualiser la maîtrise): ✓ acquired, ↻ to review, … in progress.
+                auto known=mastery_cache.find(mastery_prefix+std::to_string(id));
+                if(known!=mastery_cache.end()){
+                    const bool done=known->second=="acquis",again=known->second=="a-revoir";
+                    RectF dot(r.X-5*z,r.GetBottom()-17*z,22*z,22*z);
+                    SolidBrush fillb(rgb(done?0x2E9E5B:again?0xE07B24:0x3D7BD9));Pen ring(t.node,2*z);g.FillEllipse(&fillb,dot);g.DrawEllipse(&ring,dot);
+                    text(g,done?L"✓":again?L"↻":L"…",RectF(dot.X,dot.Y+0.5f*z,dot.Width,dot.Height),12*z,Color(255,255,255,255),Bold|Center|Symbol);
+                }
             }
             if(!n->children.empty()){
                 auto anchor=at(toggle_anchor(doc,id,b));
@@ -817,6 +836,48 @@ public:
             nemo::export_tracked(directory,path,folder);
             status+=L" · cours Nemo mis à jour";
         }catch(const std::exception& e){status+=L" · cours Nemo non mis à jour : "+wide(e.what());}
+    }
+    // Badges of mastery: the window never uses the network. mindmap-cli (next to MindMap.exe) asks Nemo and writes
+    // .mindmap-data/nemo-mastery.json; this only reads it. Needs nemo-remote and nemo-login once (see docs/CLI.md).
+    void load_mastery(){
+        try{mastery_badges=nemo::mastery_badges(directory);mastery_cache=nemo::load_mastery_cache(directory);}catch(...){}
+    }
+    void toggle_mastery(){
+        try{
+            mastery_badges=!mastery_badges;nemo::set_mastery_badges(directory,mastery_badges);
+            if(mastery_badges){mastery_cache=nemo::load_mastery_cache(directory);status=mastery_cache.empty()?L"Aucune maîtrise en mémoire : Affichage > Actualiser la maîtrise depuis Nemo…":L"Badges de maîtrise Nemo affichés (données du dernier chargement).";}
+            else status=L"Badges de maîtrise Nemo masqués.";
+        }catch(const std::exception& e){status=L"Badges de maîtrise : "+wide(e.what());}
+        repaint();
+    }
+    void refresh_mastery(){
+        if(current_file.empty()){status=L"Enregistrez d’abord cette carte pour interroger Nemo.";repaint();return;}
+        if(mastery_job.load()==1){status=L"Interrogation de Nemo déjà en cours…";repaint();return;}
+        auto cli=directory/L"mindmap-cli.exe";
+        if(!fs::exists(cli)){status=L"mindmap-cli.exe introuvable à côté de MindMap.exe : copiez-le dans ce dossier.";repaint();return;}
+        std::wstring line=L"\""+cli.wstring()+L"\" nemo-mastery \""+current_file.wstring()+L"\" --cache --workspace \""+directory.wstring()+L"\"";
+        mastery_job=1;status=L"Interrogation de Nemo…";repaint();
+        std::thread([line]()mutable{
+            STARTUPINFOW si{};si.cb=sizeof si;PROCESS_INFORMATION pi{};
+            int result=3;
+            if(CreateProcessW(nullptr,line.data(),nullptr,nullptr,FALSE,CREATE_NO_WINDOW,nullptr,nullptr,&si,&pi)){
+                if(WaitForSingleObject(pi.hProcess,45000)==WAIT_OBJECT_0){DWORD code=1;GetExitCodeProcess(pi.hProcess,&code);if(code==0)result=2;}
+                else TerminateProcess(pi.hProcess,1);
+                CloseHandle(pi.hProcess);CloseHandle(pi.hThread);
+            }
+            mastery_job=result;
+        }).detach();
+    }
+    void mastery_tick(){
+        int job=mastery_job.load();
+        if(job<2)return;
+        mastery_job=0;
+        if(job==2){
+            mastery_cache=nemo::load_mastery_cache(directory);
+            try{mastery_badges=true;nemo::set_mastery_badges(directory,true);}catch(...){}
+            status=L"Maîtrise Nemo mise à jour · "+std::to_wstring(mastery_cache.size())+L" idée(s) connue(s)";
+        }else status=L"Maîtrise Nemo : échec (réseau, jeton ou adresse : voir nemo-remote et nemo-login dans docs/CLI.md)";
+        repaint();
     }
     void toggle_auto_nemo(){
         try{
@@ -1112,6 +1173,9 @@ public:
         item(ToggleNotes,L"Aperçu des notes sur la carte\tN",state.show_notes);
         item(ToggleMinimap,L"Mini-carte\tM",state.minimap);
         item(ToggleDark,L"Thème sombre",state.dark);
+        AppendMenuW(menu,MF_SEPARATOR,0,nullptr);
+        item(ToggleMastery,L"Badges de maîtrise Nemo (✓ acquis · ↻ à revoir · … en cours)",mastery_badges);
+        item(RefreshMastery,L"Actualiser la maîtrise depuis Nemo…",false);
         if(int result=popup(menu,at))command(result);
     }
     void link_menu(POINT at){
@@ -1360,6 +1424,8 @@ public:
             if(id==Save||id==SaveAs){save(id==SaveAs);return;}
             if(id==ToggleDark){state.dark=!state.dark;apply_theme();autosave_pending=true;return;}
             if(id==ToggleMinimap){state.minimap=!state.minimap;autosave_pending=true;repaint();return;}
+            if(id==ToggleMastery){toggle_mastery();return;}
+            if(id==RefreshMastery){refresh_mastery();return;}
             if(file_flow(id))return;
             if(view_flow(id))return;
             edit_flow(id);
@@ -1497,6 +1563,7 @@ public:
         autosave_pending=true;tooltip=false;repaint();
     }
     void timer(){
+        mastery_tick();
         if(hovered&&!tooltip&&GetTickCount64()-hover_since>450){tooltip=true;repaint();}
         if(GetTickCount64()-edit_time>1200&&(pending_edit||GetFocus()==title||GetFocus()==note))commit_edit();
         if(!pending_edit&&!dragging&&!panning&&autosave_pending&&GetTickCount64()>=retry_save_at){

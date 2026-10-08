@@ -107,7 +107,7 @@ namespace nemo {
 namespace fs = submap::fs;
 // Nemo reads the course files of a folder (synchronised to its storage): maps are exported there as Markdown.
 inline fs::path config_file(const fs::path& workspace_root) { return fs::absolute(workspace_root) / ".mindmap-data" / "nemo.json"; }
-struct Config { fs::path courses; bool auto_export = false; };
+struct Config { fs::path courses; bool auto_export = false; bool mastery_badges = false; };
 inline Config load_config(const fs::path& workspace_root) {
     Config c;
     auto file = config_file(workspace_root);
@@ -116,12 +116,13 @@ inline Config load_config(const fs::path& workspace_root) {
     if (j.at("format").text() != "mindmap-nemo") throw std::runtime_error("Configuration Nemo illisible");
     c.courses = workspace::text_path(j.at("courses").text());
     if (j.object.count("autoExport")) c.auto_export = j.at("autoExport").flag();
+    if (j.object.count("masteryBadges")) c.mastery_badges = j.at("masteryBadges").flag();
     return c;
 }
 inline void save_config(const fs::path& workspace_root, const Config& c) {
     auto file = config_file(workspace_root);
     fs::create_directories(file.parent_path());
-    workspace::write(file, "{\"format\":\"mindmap-nemo\",\"version\":1,\"courses\":" + document::quote(workspace::path_text(c.courses)) + ",\"autoExport\":" + (c.auto_export ? "true" : "false") + "}\n");
+    workspace::write(file, "{\"format\":\"mindmap-nemo\",\"version\":1,\"courses\":" + document::quote(workspace::path_text(c.courses)) + ",\"autoExport\":" + (c.auto_export ? "true" : "false") + ",\"masteryBadges\":" + (c.mastery_badges ? "true" : "false") + "}\n");
 }
 inline fs::path courses_folder(const fs::path& workspace_root) { return load_config(workspace_root).courses; }
 inline bool auto_export(const fs::path& workspace_root) { try { return load_config(workspace_root).auto_export; } catch (...) { return false; } }
@@ -129,6 +130,12 @@ inline void set_courses_folder(const fs::path& workspace_root, const fs::path& f
     if (!fs::is_directory(folder)) throw std::runtime_error("Dossier introuvable : " + workspace::path_text(folder));
     auto c = load_config(workspace_root);
     c.courses = fs::absolute(folder).lexically_normal();
+    save_config(workspace_root, c);
+}
+inline bool mastery_badges(const fs::path& workspace_root) { try { return load_config(workspace_root).mastery_badges; } catch (...) { return false; } }
+inline void set_mastery_badges(const fs::path& workspace_root, bool on) {
+    auto c = load_config(workspace_root);
+    c.mastery_badges = on;
     save_config(workspace_root, c);
 }
 inline void set_auto_export(const fs::path& workspace_root, bool on) {
@@ -275,6 +282,37 @@ inline void record_titles(const fs::path& workspace_root, const fs::path& map_fi
         out += "]}";
     }
     auto file = ideas_file(workspace_root);
+    fs::create_directories(file.parent_path());
+    workspace::write(file, out + "]}\n");
+}
+
+// ----- Mastery badges: nemo-mastery --cache writes what Nemo knows; the window only READS this file (it never uses the network) -----
+inline fs::path mastery_cache_file(const fs::path& workspace_root) { return fs::absolute(workspace_root) / ".mindmap-data" / "nemo-mastery.json"; }
+inline std::map<std::string, std::string> load_mastery_cache(const fs::path& workspace_root) {
+    std::map<std::string, std::string> out;
+    auto file = mastery_cache_file(workspace_root);
+    if (!fs::exists(file)) return out;
+    try {
+        auto j = document::Parser(workspace::read(file)).parse();
+        for (const auto& e : j.at("ideas").array) out[e.at("key").text()] = e.at("status").text();
+    } catch (...) { out.clear(); }
+    return out;
+}
+// Replaces the entries of every map of "files" (a hierarchy) by "fresh" and keeps the others.
+inline void save_mastery_cache(const fs::path& workspace_root, const std::vector<fs::path>& files, const std::map<std::string, std::string>& fresh) {
+    auto all = load_mastery_cache(workspace_root);
+    for (const auto& f : files) {
+        const auto prefix = workspace::path_text(fs::absolute(f).lexically_normal()) + "#";
+        for (auto it = all.begin(); it != all.end();) it = it->first.rfind(prefix, 0) == 0 ? all.erase(it) : std::next(it);
+    }
+    for (const auto& [key, status] : fresh) all[key] = status;
+    std::string out = "{\"format\":\"mindmap-nemo-mastery\",\"version\":1,\"ideas\":[";
+    bool first = true;
+    for (const auto& [key, status] : all) {
+        out += std::string(first ? "" : ",") + "{\"key\":" + document::quote(key) + ",\"status\":" + document::quote(status) + "}";
+        first = false;
+    }
+    auto file = mastery_cache_file(workspace_root);
     fs::create_directories(file.parent_path());
     workspace::write(file, out + "]}\n");
 }

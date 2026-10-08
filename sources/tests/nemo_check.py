@@ -154,6 +154,14 @@ with tempfile.TemporaryDirectory(prefix="mindmap hist géo ") as tmp:
     check("Causes" in sent["titles"] and "Les causes" in sent["titles"], f"les deux titres doivent être demandés : {sent['titles']}")
     check(after["1789"]["status"] == "inconnu" and "renamedFrom" not in after["1789"], "une idée jamais renommée n'a pas d'ancien titre")
 
+    # --- cache pour les badges de la fenêtre : seulement les idées connues de Nemo, et l'historique d'un renommage compte
+    run("nemo-mastery", revo, "--workspace", work, "--cache")
+    cache = json.loads((work / ".mindmap-data" / "nemo-mastery.json").read_text(encoding="utf-8"))
+    by_key = {i["key"]: i["status"] for i in cache["ideas"]}
+    check(by_key.get(f"{Path(causes['file']).resolve().as_posix()}#{causes['id']}") == "acquis", f"cache des badges : {by_key}")
+    check(sorted(by_key.values()) == ["a-revoir", "acquis"], f"les idées inconnues n'ont pas de badge : {by_key}")
+    run("nemo-config", "--workspace", work, "--json")
+
 server.shutdown()
 if failures:
     print("ÉCHECS :\n" + "\n".join(failures))

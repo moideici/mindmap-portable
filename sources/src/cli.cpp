@@ -34,7 +34,7 @@ struct Args {
     }
 };
 fs::path executable_folder;  // dossier de l'exécutable : c'est la racine de l'espace de travail portable (.mindmap-data)
-const std::set<std::string> boolean_flags = {"json", "deep", "only-node", "collapsed", "expanded", "no-layout", "help", "flush"};
+const std::set<std::string> boolean_flags = {"json", "deep", "only-node", "collapsed", "expanded", "no-layout", "help", "flush", "cache"};
 Args parse_args(const std::vector<std::string>& v) {
     Args a;
     for (size_t i = 0; i < v.size(); ++i) {
@@ -377,6 +377,17 @@ void cmd_nemo_mastery(const Args& a) {
     };
     std::map<std::pair<std::string, long long>, std::pair<nemo::Mastery, std::string>> resolved;
     for (const auto& idea : ideas) { std::string via; auto m = find(idea, via); resolved[{workspace::path_text(idea.file), idea.id}] = {m, via}; }
+    if (a.has("cache")) {
+        std::map<std::string, std::string> fresh;
+        std::vector<fs::path> files;
+        for (const auto& entry : submap::hierarchy(map_path(a))) files.push_back(entry.file);
+        for (const auto& idea : ideas) {
+            std::string unused;
+            auto m = find(idea, unused);
+            if (m.status != "inconnu") fresh[nemo::idea_key(idea.file, idea.id)] = m.status;
+        }
+        nemo::save_mastery_cache(root, files, fresh);
+    }
     auto status_of = [&](const nemo::Idea& idea) { return resolved.at({workspace::path_text(idea.file), idea.id}).first; };
     auto via_of = [&](const nemo::Idea& idea) { return resolved.at({workspace::path_text(idea.file), idea.id}).second; };
     static const std::map<std::string, std::string> icons = {{"acquis", "✓"}, {"a-revoir", "↻"}, {"en-cours", "…"}, {"inconnu", "·"}};
@@ -608,7 +619,7 @@ const std::vector<Command>& commands() {
         {"Cours et Nemo (réseau, facultatif)", "nemo-login", "echo JETON | nemo-login", "enregistre le jeton dans le Gestionnaire d'identification Windows", cmd_nemo_login},
         {"Cours et Nemo (réseau, facultatif)", "nemo-logout", "nemo-logout", "supprime le jeton enregistré", cmd_nemo_logout},
         {"Cours et Nemo (réseau, facultatif)", "nemo-push", "nemo-push <carte>|--all <dossier>|--flush", "publie le cours directement sur Nemo (sans démon de synchronisation) ; file d'attente hors-ligne ; supprime l'ancien cours d'une carte renommée", cmd_nemo_push},
-        {"Cours et Nemo (réseau, facultatif)", "nemo-mastery", "nemo-mastery <carte> [--json]", "ce que Nemo sait de chaque idée : ✓ acquis, ↻ à revoir, … en cours, · inconnu (lecture seule)", cmd_nemo_mastery},
+        {"Cours et Nemo (réseau, facultatif)", "nemo-mastery", "nemo-mastery <carte> [--json] [--cache]", "ce que Nemo sait de chaque idée : ✓ acquis, ↻ à revoir, … en cours, · inconnu (lecture seule) ; --cache l'enregistre pour les badges de la fenêtre", cmd_nemo_mastery},
         {"Sous-cartes (une idée peut contenir une autre carte, qui peut elle-même en contenir…)", "submap-new", "submap-new <carte> --id ID [--title T] [--outline plan.md|-]", "crée <carte>/<idée>.mindmap et le relie à l'idée", edit<do_submap_new>},
         {"Sous-cartes (une idée peut contenir une autre carte, qui peut elle-même en contenir…)", "submap-attach", "submap-attach <carte> --id ID --file chemin/relatif.mindmap", "relie une carte existante (dans le dossier de la carte)", edit<do_submap_attach>},
         {"Sous-cartes (une idée peut contenir une autre carte, qui peut elle-même en contenir…)", "submap-detach", "submap-detach <carte> --id ID", "détache la sous-carte (le fichier est conservé)", edit<do_submap_detach>},

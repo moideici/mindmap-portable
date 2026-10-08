@@ -9,3 +9,4 @@ __pycache__/
 session.mindmap
 session-invalide-*.mindmap
 .mindmap-data/
+mindmap-cli.exe
