@@ -157,8 +157,8 @@ struct Reply { long status = 0; std::string body; };
 inline Reply http(const std::string&, const std::string&, const std::string&, const std::string&, const std::string&) { throw std::runtime_error("réseau : Windows uniquement"); }
 #endif
 
-inline std::string reply_problem(const Reply& r) {
-    if (r.status == 401 || r.status == 403) return "Nemo refuse le jeton (HTTP " + std::to_string(r.status) + ") : le dépôt de cours demande un profil administrateur ; refaites nemo-login.";
+inline std::string reply_problem(const Reply& r, const std::string& need = "le dépôt de cours demande un profil administrateur") {
+    if (r.status == 401 || r.status == 403) return "Nemo refuse le jeton (HTTP " + std::to_string(r.status) + ") : " + need + " ; refaites nemo-login.";
     if (r.status == 413) return "Plafond de stockage Nemo atteint (HTTP 413) : supprimez des cours avant de publier.";
     return "Nemo a répondu HTTP " + std::to_string(r.status) + (r.body.empty() ? "" : " : " + r.body.substr(0, 200));
 }
@@ -258,7 +258,7 @@ inline std::map<std::string, Mastery> lookup_mastery(const Remote& r, const std:
         for (size_t i = from; i < to; ++i) body += (i > from ? "," : "") + document::quote(titles[i]);
         body += "]}";
         auto reply = http("POST", r.url + "/api/mastery/lookup", token, "application/json", body);
-        if (reply.status != 200) throw std::runtime_error(reply_problem(reply));
+        if (reply.status != 200) throw std::runtime_error(reply_problem(reply, "la lecture de la maîtrise demande le jeton du profil élève (ou le jeton principal)"));
         auto j = document::Parser(reply.body).parse();
         for (const auto& item : j.at("items").array) {
             Mastery m;

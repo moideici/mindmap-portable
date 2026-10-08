@@ -354,6 +354,7 @@ void cmd_nemo_push(const Args& a) {
 void cmd_nemo_mastery(const Args& a) {
     auto root = workspace_folder(a);
     auto remote = nemo::load_remote(root);
+    if (a.has("subject")) remote.subject = document::trim(a.get("subject"));  // the notions of this map live under another subject than the courses
     nemo::need_remote(remote);
     auto token = nemo::checked_token();
     auto ideas = nemo::ideas_of(map_path(a), nemo::load_titles(root));
@@ -619,7 +620,7 @@ const std::vector<Command>& commands() {
         {"Cours et Nemo (réseau, facultatif)", "nemo-login", "echo JETON | nemo-login", "enregistre le jeton dans le Gestionnaire d'identification Windows", cmd_nemo_login},
         {"Cours et Nemo (réseau, facultatif)", "nemo-logout", "nemo-logout", "supprime le jeton enregistré", cmd_nemo_logout},
         {"Cours et Nemo (réseau, facultatif)", "nemo-push", "nemo-push <carte>|--all <dossier>|--flush", "publie le cours directement sur Nemo (sans démon de synchronisation) ; file d'attente hors-ligne ; supprime l'ancien cours d'une carte renommée", cmd_nemo_push},
-        {"Cours et Nemo (réseau, facultatif)", "nemo-mastery", "nemo-mastery <carte> [--json] [--cache]", "ce que Nemo sait de chaque idée : ✓ acquis, ↻ à revoir, … en cours, · inconnu (lecture seule) ; --cache l'enregistre pour les badges de la fenêtre", cmd_nemo_mastery},
+        {"Cours et Nemo (réseau, facultatif)", "nemo-mastery", "nemo-mastery <carte> [--subject matière] [--json] [--cache]", "ce que Nemo sait de chaque idée : ✓ acquis, ↻ à revoir, … en cours, · inconnu (lecture seule) ; --subject remplace la matière de nemo-remote ; --cache l'enregistre pour les badges de la fenêtre", cmd_nemo_mastery},
         {"Sous-cartes (une idée peut contenir une autre carte, qui peut elle-même en contenir…)", "submap-new", "submap-new <carte> --id ID [--title T] [--outline plan.md|-]", "crée <carte>/<idée>.mindmap et le relie à l'idée", edit<do_submap_new>},
         {"Sous-cartes (une idée peut contenir une autre carte, qui peut elle-même en contenir…)", "submap-attach", "submap-attach <carte> --id ID --file chemin/relatif.mindmap", "relie une carte existante (dans le dossier de la carte)", edit<do_submap_attach>},
         {"Sous-cartes (une idée peut contenir une autre carte, qui peut elle-même en contenir…)", "submap-detach", "submap-detach <carte> --id ID", "détache la sous-carte (le fichier est conservé)", edit<do_submap_detach>},

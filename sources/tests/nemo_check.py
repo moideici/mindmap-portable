@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import unicodedata
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -15,6 +16,31 @@ CLI = str(Path(sys.argv[1]).resolve())
 failures = []
 seen = []  # (méthode, chemin décodé, jeton, corps)
 MASTERY = {"Causes": "acquis", "Conséquences": "a-revoir"}
+
+
+def stable_item_id(subject, front):
+    """Copie de stableItemId (nemo-https/src/notionId.js) : NFKD, diacritiques U+0300–U+036F retirés, FNV-1a 32 bits sur les unités UTF-16."""
+    text = f"{subject}::{front}".lower().strip()
+    text = "".join(c for c in unicodedata.normalize("NFKD", text) if not 0x300 <= ord(c) <= 0x36F)
+    h = 0x811C9DC5
+    units = text.encode("utf-16-le")
+    for i in range(0, len(units), 2):
+        h = ((h ^ int.from_bytes(units[i:i + 2], "little")) * 0x01000193) & 0xFFFFFFFF
+    digits, out = "0123456789abcdefghijklmnopqrstuvwxyz", ""
+    while True:
+        h, r = divmod(h, 36)
+        out = digits[r] + out
+        if not h:
+            return "n" + out
+
+
+# Valeurs produites par notionId.js (node) : le faux serveur répond par id, comme le vrai, donc un titre altéré en route (UTF-8, accents) ne serait plus reconnu.
+for args, expected in [(("anglais", "mouillé"), "nan2mqd"), (("Anglais", "MOUILLÉ"), "nan2mqd"), (("anglais", "un oreiller"), "n1fnvlcd"),
+                       (("hist géo", "Œuvre d’art — « test »"), "n1jwp7yr"), (("hist géo", "Déclaration des droits de l’homme et du citoyen"), "n1habvmm")]:
+    if stable_item_id(*args) != expected:
+        print(f"ÉCHEC : stable_item_id{args} = {stable_item_id(*args)} au lieu de {expected}")
+        sys.exit(1)
+KNOWN_IDS = {stable_item_id("anglais", "mouillé"): "acquis", stable_item_id("hist géo", "Œuvre d’art — « test »"): "a-revoir"}
 
 
 class Fake(BaseHTTPRequestHandler):
@@ -29,8 +55,12 @@ class Fake(BaseHTTPRequestHandler):
             self.send_response(401); self.end_headers(); return
         payload = b"{}"
         if path == "/api/mastery/lookup":
-            titles = json.loads(body)["titles"]
-            payload = json.dumps({"items": [{"title": t, "itemId": "n1", "status": MASTERY.get(t, "inconnu"), **({"box": 3, "mastery": 1} if t in MASTERY else {})} for t in titles]}).encode()
+            request = json.loads(body)
+            titles = request["titles"]
+            if request["subject"] == "hist géo" and not any(stable_item_id("hist géo", t) in KNOWN_IDS for t in titles):
+                payload = json.dumps({"items": [{"title": t, "itemId": "n1", "status": MASTERY.get(t, "inconnu"), **({"box": 3, "mastery": 1} if t in MASTERY else {})} for t in titles]}).encode()
+            else:  # comme le vrai serveur : l'id stable calculé sur la matière + le titre reçus
+                payload = json.dumps({"items": [{"title": t.strip(), "itemId": stable_item_id(request["subject"], t.strip()), "status": KNOWN_IDS.get(stable_item_id(request["subject"], t.strip()), "inconnu")} for t in titles]}).encode()
         self.send_response(200)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(payload)))
@@ -161,6 +191,21 @@ with tempfile.TemporaryDirectory(prefix="mindmap hist géo ") as tmp:
     check(by_key.get(f"{Path(causes['file']).resolve().as_posix()}#{causes['id']}") == "acquis", f"cache des badges : {by_key}")
     check(sorted(by_key.values()) == ["a-revoir", "acquis"], f"les idées inconnues n'ont pas de badge : {by_key}")
     run("nemo-config", "--workspace", work, "--json")
+
+    # --- titres accentués et matière remplacée (--subject) : le serveur doit recevoir les titres intacts pour retrouver l'id stable
+    vocab = cartes / "Vocabulaire.mindmap"
+    run("new", vocab, "--title", "Vocabulaire")
+    for title in ["mouillé", "un oreiller", "Œuvre d’art — « test »"]:
+        run("add", vocab, "--title", title)
+    seen.clear()
+    got = {i["title"]: i["status"] for i in json.loads(run("nemo-mastery", vocab, "--workspace", work, "--subject", "anglais", "--json")[0])["ideas"]}
+    check(got.get("mouillé") == "acquis" and got.get("un oreiller") == "inconnu", f"--subject anglais : {got}")
+    sent = json.loads([s for s in seen if s[1] == "/api/mastery/lookup"][-1][3])
+    check(sent["subject"] == "anglais" and "Œuvre d’art — « test »" in sent["titles"], f"titres envoyés : {sent}")
+    got = {i["title"]: i["status"] for i in json.loads(run("nemo-mastery", vocab, "--workspace", work, "--json")[0])["ideas"]}
+    check(got.get("Œuvre d’art — « test »") == "a-revoir" and got.get("mouillé") == "inconnu", f"matière de nemo-remote : {got}")
+    _, err = run("nemo-mastery", vocab, "--workspace", work, expect=1, token="mauvais")
+    check("profil élève" in err, f"refus du jeton pour la maîtrise : {err}")
 
 server.shutdown()
 if failures:
