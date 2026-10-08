@@ -234,6 +234,7 @@ inline std::string push_map(const fs::path& root, const Remote& r, const std::st
         workspace::write(queue_folder(root) / workspace::text_path(name), text);
         return "queued";
     }
+    try { record_titles(root, map_file); } catch (...) {}
     auto list = load_pushed(root);
     std::vector<Tracked> next;
     const auto map_text = workspace::path_text(fs::absolute(map_file).lexically_normal());
@@ -247,22 +248,7 @@ inline std::string push_map(const fs::path& root, const Remote& r, const std::st
 }
 
 // ----- Mastery -----
-struct Idea { fs::path file; long long id = 0; std::string title; };
 struct Mastery { std::string status = "inconnu"; int box = 0; double mastery = 0; std::string next; };
-// Every idea of every map of the hierarchy (the central subject is the map title, not an idea).
-inline std::vector<Idea> ideas_of(const fs::path& root_map) {
-    std::vector<Idea> out;
-    for (const auto& entry : submap::hierarchy(root_map)) {
-        if (entry.status != submap::Status::Ok) continue;
-        auto state = submap::load(entry.file);
-        for (long long id : state.map->descendants(1)) {
-            if (id == 1) continue;
-            auto title = document::single_line(state.map->nodes.at(id)->title);
-            if (!title.empty()) out.push_back({entry.file, id, title});
-        }
-    }
-    return out;
-}
 // Asks Nemo about the titles (200 at a time); the answer is keyed by the title as sent.
 inline std::map<std::string, Mastery> lookup_mastery(const Remote& r, const std::string& token, const std::vector<std::string>& titles) {
     std::map<std::string, Mastery> out;

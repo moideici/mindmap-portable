@@ -356,19 +356,36 @@ void cmd_nemo_mastery(const Args& a) {
     auto remote = nemo::load_remote(root);
     nemo::need_remote(remote);
     auto token = nemo::checked_token();
-    auto ideas = nemo::ideas_of(map_path(a));
+    auto ideas = nemo::ideas_of(map_path(a), nemo::load_titles(root));
     std::vector<std::string> titles;
     std::set<std::string> seen;
-    for (const auto& idea : ideas) if (seen.insert(idea.title).second) titles.push_back(idea.title);
+    for (const auto& idea : ideas) {
+        if (seen.insert(idea.title).second) titles.push_back(idea.title);
+        for (const auto& t : idea.former) if (seen.insert(t).second) titles.push_back(t);
+    }
     auto known = nemo::lookup_mastery(remote, token, titles);
-    auto status_of = [&](const std::string& title) { auto it = known.find(title); return it == known.end() ? nemo::Mastery{} : it->second; };
+    try { nemo::record_titles(root, map_path(a)); } catch (...) {}  // keeps the former titles of the ideas (not the map itself)
+    // The current title wins; an idea that was renamed keeps the history of its former title (the first one Nemo knows).
+    auto find = [&](const nemo::Idea& idea, std::string& via) {
+        auto it = known.find(idea.title);
+        if (it != known.end() && it->second.status != "inconnu") return it->second;
+        for (const auto& t : idea.former) {
+            auto old = known.find(t);
+            if (old != known.end() && old->second.status != "inconnu") { via = t; return old->second; }
+        }
+        return nemo::Mastery{};
+    };
+    std::map<std::pair<std::string, long long>, std::pair<nemo::Mastery, std::string>> resolved;
+    for (const auto& idea : ideas) { std::string via; auto m = find(idea, via); resolved[{workspace::path_text(idea.file), idea.id}] = {m, via}; }
+    auto status_of = [&](const nemo::Idea& idea) { return resolved.at({workspace::path_text(idea.file), idea.id}).first; };
+    auto via_of = [&](const nemo::Idea& idea) { return resolved.at({workspace::path_text(idea.file), idea.id}).second; };
     static const std::map<std::string, std::string> icons = {{"acquis", "✓"}, {"a-revoir", "↻"}, {"en-cours", "…"}, {"inconnu", "·"}};
     if (a.has("json")) {
         std::string out = "{\"ok\":true,\"ideas\":[";
         for (size_t i = 0; i < ideas.size(); ++i) {
-            auto m = status_of(ideas[i].title);
+            auto m = status_of(ideas[i]);
             out += (i ? "," : "") + std::string("{\"file\":") + quote(workspace::path_text(ideas[i].file)) + ",\"id\":" + std::to_string(ideas[i].id) + ",\"title\":" + quote(ideas[i].title)
-                + ",\"status\":" + quote(m.status) + ",\"box\":" + std::to_string(m.box) + (m.next.empty() ? "" : ",\"nextReviewAt\":" + quote(m.next)) + "}";
+                + ",\"status\":" + quote(m.status) + (via_of(ideas[i]).empty() ? "" : ",\"renamedFrom\":" + quote(via_of(ideas[i]))) + ",\"box\":" + std::to_string(m.box) + (m.next.empty() ? "" : ",\"nextReviewAt\":" + quote(m.next)) + "}";
         }
         print(out + "]}\n");
         return;
@@ -377,8 +394,8 @@ void cmd_nemo_mastery(const Args& a) {
     size_t counts[4] = {0, 0, 0, 0};
     for (const auto& idea : ideas) {
         if (workspace::path_text(idea.file) != current) { current = workspace::path_text(idea.file); out += "\n" + current + "\n"; }
-        auto m = status_of(idea.title);
-        out += "  " + icons.at(m.status) + " [" + std::to_string(idea.id) + "] " + idea.title + (m.status == "inconnu" ? "" : "   (" + m.status + ", boîte " + std::to_string(m.box) + ")") + "\n";
+        auto m = status_of(idea);
+        out += "  " + icons.at(m.status) + " [" + std::to_string(idea.id) + "] " + idea.title + (m.status == "inconnu" ? "" : "   (" + m.status + ", boîte " + std::to_string(m.box) + (via_of(idea).empty() ? "" : ", ancien titre « " + via_of(idea) + " »") + ")") + "\n";
         counts[m.status == "acquis" ? 0 : m.status == "a-revoir" ? 1 : m.status == "en-cours" ? 2 : 3]++;
     }
     print(out + "\n" + std::to_string(counts[0]) + " acquise(s) ✓ · " + std::to_string(counts[1]) + " à revoir ↻ · " + std::to_string(counts[2]) + " en cours … · " + std::to_string(counts[3]) + " inconnue(s) ·\n"

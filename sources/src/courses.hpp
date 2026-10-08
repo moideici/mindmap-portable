@@ -178,6 +178,7 @@ inline void remove_generated(const fs::path& folder, const std::string& file_tex
     if (file_text.size() < course_suffix.size() || file_text.compare(file_text.size() - course_suffix.size(), course_suffix.size(), course_suffix) != 0) return;
     fs::remove(file, e);
 }
+inline void record_titles(const fs::path& workspace_root, const fs::path& map_file);
 // Exports map_file and keeps the manifest in step: a renamed map replaces its old course file, a vanished map's file is removed.
 inline fs::path export_tracked(const fs::path& workspace_root, const fs::path& map_file, const fs::path& folder) {
     auto target = export_course(map_file, folder);
@@ -193,6 +194,7 @@ inline fs::path export_tracked(const fs::path& workspace_root, const fs::path& m
     }
     next.push_back({map_text, target_text});
     save_manifest(workspace_root, next);
+    try { record_titles(workspace_root, map_file); } catch (...) {}
     return target;
 }
 // Root maps of a folder: every .mindmap that no other map of the folder holds as a sub-map.
@@ -214,5 +216,66 @@ inline std::vector<fs::path> root_maps(const fs::path& folder) {
         if (!is_held) roots.push_back(f);
     }
     return roots;
+}
+
+// ----- Ideas and their former titles: a renamed idea keeps its review history on Nemo -----
+// Nemo finds a notion by subject + title. MindMap remembers, per idea (map file + idea number, both stable across renames), the titles it
+// has had when it published or asked for mastery; nemo-mastery then also asks for the former titles and reports the history it finds.
+struct Idea { fs::path file; long long id = 0; std::string title; std::vector<std::string> former; };
+inline fs::path ideas_file(const fs::path& workspace_root) { return fs::absolute(workspace_root) / ".mindmap-data" / "nemo-ideas.json"; }
+inline std::string idea_key(const fs::path& file, long long id) { return workspace::path_text(fs::absolute(file).lexically_normal()) + "#" + std::to_string(id); }
+inline std::map<std::string, std::vector<std::string>> load_titles(const fs::path& workspace_root) {
+    std::map<std::string, std::vector<std::string>> out;
+    auto file = ideas_file(workspace_root);
+    if (!fs::exists(file)) return out;
+    try {
+        auto j = document::Parser(workspace::read(file)).parse();
+        for (const auto& e : j.at("ideas").array) {
+            std::vector<std::string> titles;
+            for (const auto& t : e.at("titles").array) titles.push_back(t.text());
+            out[e.at("key").text()] = titles;
+        }
+    } catch (...) { out.clear(); }
+    return out;
+}
+// Every idea of every map of the hierarchy (the central subject is the map title, not an idea), with its former titles.
+inline std::vector<Idea> ideas_of(const fs::path& root_map, const std::map<std::string, std::vector<std::string>>& known = {}) {
+    std::vector<Idea> out;
+    for (const auto& entry : submap::hierarchy(root_map)) {
+        if (entry.status != submap::Status::Ok) continue;
+        auto state = submap::load(entry.file);
+        for (long long id : state.map->descendants(1)) {
+            if (id == 1) continue;
+            auto title = document::single_line(state.map->nodes.at(id)->title);
+            if (title.empty()) continue;
+            Idea idea{entry.file, id, title, {}};
+            if (auto it = known.find(idea_key(entry.file, id)); it != known.end())
+                for (const auto& t : it->second) if (t != title && idea.former.size() < 5) idea.former.push_back(t);
+            out.push_back(std::move(idea));
+        }
+    }
+    return out;
+}
+// Remembers the current title of every idea of a map hierarchy (newest first, 6 titles at most per idea).
+inline void record_titles(const fs::path& workspace_root, const fs::path& map_file) {
+    auto known = load_titles(workspace_root);
+    for (const auto& idea : ideas_of(map_file)) {
+        auto& titles = known[idea_key(idea.file, idea.id)];
+        titles.erase(std::remove(titles.begin(), titles.end(), idea.title), titles.end());
+        titles.insert(titles.begin(), idea.title);
+        if (titles.size() > 6) titles.resize(6);
+    }
+    std::string out = "{\"format\":\"mindmap-nemo-ideas\",\"version\":1,\"ideas\":[";
+    bool first = true;
+    for (const auto& [key, titles] : known) {
+        if (!first) out += ",";
+        first = false;
+        out += "{\"key\":" + document::quote(key) + ",\"titles\":[";
+        for (size_t i = 0; i < titles.size(); ++i) out += (i ? "," : "") + document::quote(titles[i]);
+        out += "]}";
+    }
+    auto file = ideas_file(workspace_root);
+    fs::create_directories(file.parent_path());
+    workspace::write(file, out + "]}\n");
 }
 } // namespace nemo

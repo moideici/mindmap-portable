@@ -145,6 +145,15 @@ with tempfile.TemporaryDirectory(prefix="mindmap hist géo ") as tmp:
     text, _ = run("nemo-mastery", revo, "--workspace", work)
     check("✓" in text and "↻" in text and revo.read_bytes() == before, "lecture seule : la carte ne doit pas changer")
 
+    # --- renommer une idée ne perd pas son historique : MindMap se souvient de l'ancien titre (publication ou maîtrise)
+    causes = next(i for i in json.loads(run("nemo-mastery", revo, "--workspace", work, "--json")[0])["ideas"] if i["title"] == "Causes")
+    run("set", causes["file"], "--id", causes["id"], "--title", "Les causes")
+    after = {i["title"]: i for i in json.loads(run("nemo-mastery", revo, "--workspace", work, "--json")[0])["ideas"]}
+    check(after["Les causes"]["status"] == "acquis" and after["Les causes"].get("renamedFrom") == "Causes", f"après renommage : {after.get('Les causes')}")
+    sent = json.loads([s for s in seen if s[1] == "/api/mastery/lookup"][-1][3])
+    check("Causes" in sent["titles"] and "Les causes" in sent["titles"], f"les deux titres doivent être demandés : {sent['titles']}")
+    check(after["1789"]["status"] == "inconnu" and "renamedFrom" not in after["1789"], "une idée jamais renommée n'a pas d'ancien titre")
+
 server.shutdown()
 if failures:
     print("ÉCHECS :\n" + "\n".join(failures))
