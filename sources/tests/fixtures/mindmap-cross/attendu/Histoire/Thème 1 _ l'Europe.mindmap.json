@@ -1,0 +1,35 @@
+{
+ "file": "Histoire/Thème 1 _ l'Europe.mindmap",
+ "root": {
+  "id": 1,
+  "title": "Thème 1 : l'Europe",
+  "note": "Intro du thème",
+  "color": "#6274e8",
+  "uid": "39e0a1cf4046",
+  "children": [
+   {
+    "id": 2,
+    "title": "Chapitre 1 : la Révolution",
+    "color": "#6274e8",
+    "submap": "Thème 1 _ l'Europe/Chapitre 1 _ la Révolution.mindmap",
+    "uid": "9bb00ef312e6",
+    "children": [
+     {
+      "id": 3,
+      "title": "1789",
+      "note": "La Bastille",
+      "color": "#6274e8",
+      "uid": "f960b9790839"
+     }
+    ]
+   },
+   {
+    "id": 4,
+    "title": "Chapitre 2",
+    "color": "#26a69a",
+    "uid": "9cfa2a262b62"
+   }
+  ]
+ },
+ "links": []
+}

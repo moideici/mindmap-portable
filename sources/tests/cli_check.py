@@ -1,6 +1,7 @@
 """Bout en bout de mindmap-cli : création, édition, sous-cartes imbriquées, boucles et erreurs.
 Usage : python cli_check.py <mindmap-cli.exe>  (dossier de test volontairement accentué)"""
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -135,8 +136,59 @@ with tempfile.TemporaryDirectory(prefix="mindmap hist géo ") as tmp:
     exported = Path(json.loads(out)["file"])
     markdown = exported.read_text(encoding="utf-8")
     check(exported.parent == nemo_courses and exported.name == "Histoire (carte mentale).md", f"fichier exporté : {exported}")
+    # chaque titre porte l'identifiant stable de son idée, en commentaire HTML (invisible une fois le Markdown affiché)
+    ids = re.findall(r" <!-- id:([0-9a-f]{12}) -->$", markdown, re.M)
+    titled = [line for line in markdown.splitlines() if line.startswith(("#", "- ", "  - ")) and "<!-- Généré" not in line]
+    sections = re.findall(r"^##+ .* <!-- id:([0-9a-f]{12}) -->$", markdown, re.M)
+    # une idée porteuse de sous-carte apparaît deux fois (sa puce, puis le titre de sa section) avec le même identifiant
+    check(len(ids) == len(titled) == 13 and len(set(ids)) == 9 and len(sections) == 4 and all(ids.count(s) == 2 for s in sections),
+          f"identifiants dans le cours exporté :\n{markdown}")
+    markdown = re.sub(r" <!-- id:[0-9a-f]+ -->", "", markdown)
     check("\n# Histoire\n" in markdown and "\n## Thème 1 : l'Europe\n" in markdown and "\n### Chapitre 1 : la Révolution\n" in markdown and "- Napoléon" in markdown,
           f"sections du cours exporté :\n{markdown}")
+
+    # --- identifiants stables : conservés au renommage, au déplacement et au réimport d'un cours exporté
+    shown = json.loads(run("show", course, "--json")[0])["root"]
+    first = shown["children"][0]
+    run("set", course, "--id", first["id"], "--title", "Thème 1 : l'Europe (renommé)")
+    again = json.loads(run("show", course, "--json")[0])["root"]["children"][0]
+    check(again["uid"] == first["uid"] and again["title"].endswith("(renommé)"), f"identifiant après renommage : {first} / {again}")
+    reexported = Path(json.loads(run("nemo-export", course, "--workspace", folder, "--json")[0])["file"]).read_text(encoding="utf-8")
+    check(f"- Thème 1 : l'Europe (renommé) <!-- id:{first['uid']} -->" in reexported, f"export après renommage :\n{reexported}")
+    reimported = folder / "Réimport.mindmap"
+    run("import-course", reimported, stdin=reexported)
+    back = json.loads(run("show", reimported, "--json")[0])["root"]
+    check(back["title"] == "Histoire" and back["uid"] == shown["uid"] and back["children"][0]["uid"] == first["uid"]
+          and back["children"][0]["title"] == "Thème 1 : l'Europe (renommé)", f"réimport du cours exporté : {back}")
+    check(not any(c["title"].startswith("<!--") for c in back["children"]), "l'en-tête « Généré depuis » n'est pas une idée")
+
+    # --- rétrocompatibilité : une carte sans identifiants (version 3) reste lisible telle quelle ; ils sont ajoutés au premier enregistrement
+    old = folder / "Ancienne.mindmap"
+    old.write_text(json.dumps({"format": "mindmap-portable", "version": 3, "next_id": 3, "selected": 1,
+                               "view": {"zoom": 1, "x": 0, "y": 0, "layout": 1},
+                               "nodes": [{"id": 1, "parent": -1, "title": "Ancienne", "note": "", "x": 0, "y": 0, "color": 0, "collapsed": False},
+                                         {"id": 2, "parent": 1, "title": "Idée", "note": "", "x": 1, "y": 0, "color": 0, "collapsed": False}],
+                               "links": []}), encoding="utf-8")
+    before = old.read_bytes()
+    out, _ = run("show", old, "--json")
+    check("uid" not in out and old.read_bytes() == before, "lire une ancienne carte ne l'écrit pas et n'invente pas d'identifiant")
+    check("<!-- id:" not in run("nemo-export", old, "--to", folder, "--json")[0] and "<!-- id:" not in (folder / "Ancienne (carte mentale).md").read_text(encoding="utf-8"),
+          "pas d'identifiant inventé à l'export d'une carte jamais enregistrée")
+    run("set", old, "--id", 2, "--note", "touchée")
+    saved = json.loads(old.read_text(encoding="utf-8"))
+    check(saved["version"] == 3 and all(re.fullmatch(r"[0-9a-f]{12}", n.get("uid", "")) for n in saved["nodes"]), f"identifiants ajoutés à l'enregistrement : {saved}")
+    uid_before = {n["id"]: n["uid"] for n in saved["nodes"]}
+    run("set", old, "--id", 2, "--title", "Idée renommée")
+    check({n["id"]: n["uid"] for n in json.loads(old.read_text(encoding="utf-8"))["nodes"]} == uid_before, "un enregistrement suivant ne change pas les identifiants")
+    duplicated = json.loads(old.read_text(encoding="utf-8"))
+    duplicated["nodes"][1]["uid"] = duplicated["nodes"][0]["uid"]          # fichier copié ou retouché à la main
+    old.write_text(json.dumps(duplicated), encoding="utf-8")
+    run("set", old, "--id", 2, "--note", "dédoublée")
+    fixed = [n["uid"] for n in json.loads(old.read_text(encoding="utf-8"))["nodes"]]
+    check(len(set(fixed)) == 2 and fixed[0] == duplicated["nodes"][0]["uid"], f"identifiant en double : la première idée le garde, l'autre en reçoit un neuf : {fixed}")
+    duplicated["nodes"][1]["uid"] = "pas un id !"
+    old.write_text(json.dumps(duplicated), encoding="utf-8")
+    run("show", old, expect=1)
 
     # Fichier manquant => problème signalé, code 1.
     chapter.unlink()

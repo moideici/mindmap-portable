@@ -249,25 +249,37 @@ inline std::string push_map(const fs::path& root, const Remote& r, const std::st
 
 // ----- Mastery -----
 struct Mastery { std::string status = "inconnu"; int box = 0; double mastery = 0; std::string next; };
-// Asks Nemo about the titles (200 at a time); the answer is keyed by the title as sent.
-inline std::map<std::string, Mastery> lookup_mastery(const Remote& r, const std::string& token, const std::vector<std::string>& titles) {
-    std::map<std::string, Mastery> out;
-    for (size_t from = 0; from < titles.size(); from += 200) {
+struct MasteryReply { std::map<std::string, Mastery> by_title, by_uid; };
+inline Mastery mastery_of(const document::Json& item) {
+    Mastery m;
+    m.status = item.at("status").text();
+    if (item.object.count("box")) m.box = static_cast<int>(item.at("box").num());
+    if (item.object.count("mastery")) m.mastery = item.at("mastery").num();
+    if (item.object.count("nextReviewAt")) m.next = item.at("nextReviewAt").text();
+    return m;
+}
+// Asks Nemo about the titles and the identified ideas ({uid, title}), 200 of each at a time. Titles answer in "items", keyed by the title
+// as sent; ideas in "ideas", keyed by uid (a Nemo without identifiers ignores them: the titles still answer).
+inline MasteryReply lookup_mastery(const Remote& r, const std::string& token, const std::vector<std::string>& titles,
+                                   const std::vector<std::pair<std::string, std::string>>& ideas = {}) {
+    MasteryReply out;
+    for (size_t from = 0; from < titles.size() || from < ideas.size(); from += 200) {
         std::string body = "{\"subject\":" + document::quote(r.subject) + ",\"titles\":[";
-        const auto to = std::min(titles.size(), from + 200);
-        for (size_t i = from; i < to; ++i) body += (i > from ? "," : "") + document::quote(titles[i]);
-        body += "]}";
+        for (size_t i = from; i < std::min(titles.size(), from + 200); ++i) body += (i > from ? "," : "") + document::quote(titles[i]);
+        body += "]";
+        if (from < ideas.size()) {
+            body += ",\"ideas\":[";
+            for (size_t i = from; i < std::min(ideas.size(), from + 200); ++i)
+                body += (i > from ? "," : "") + std::string("{\"id\":") + document::quote(ideas[i].first) + ",\"title\":" + document::quote(ideas[i].second) + "}";
+            body += "]";
+        }
+        body += "}";
         auto reply = http("POST", r.url + "/api/mastery/lookup", token, "application/json", body);
         if (reply.status != 200) throw std::runtime_error(reply_problem(reply, "la lecture de la maîtrise demande le jeton du profil élève (ou le jeton principal)"));
         auto j = document::Parser(reply.body).parse();
-        for (const auto& item : j.at("items").array) {
-            Mastery m;
-            m.status = item.at("status").text();
-            if (item.object.count("box")) m.box = static_cast<int>(item.at("box").num());
-            if (item.object.count("mastery")) m.mastery = item.at("mastery").num();
-            if (item.object.count("nextReviewAt")) m.next = item.at("nextReviewAt").text();
-            out[item.at("title").text()] = m;
-        }
+        for (const auto& item : j.at("items").array) out.by_title[item.at("title").text()] = mastery_of(item);
+        if (auto it = j.object.find("ideas"); it != j.object.end() && it->second.kind == document::Json::Array)
+            for (const auto& item : it->second.array) out.by_uid[item.at("id").text()] = mastery_of(item);
     }
     return out;
 }

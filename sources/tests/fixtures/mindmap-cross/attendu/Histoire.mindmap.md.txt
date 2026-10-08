@@ -1,0 +1,26 @@
+<!-- Généré depuis « Histoire.mindmap » par MindMap. Modifiez la carte, pas ce fichier : il est régénéré à chaque export. -->
+
+# Histoire <!-- id:aeaff3aed214 -->
+
+- ★ Thème 1 : l'Europe <!-- id:34461b8dcd21 -->
+  > Intro du thème
+- [?] Avant-propos <!-- id:7afa9c979b82 -->
+- ⚑ Citation « "guillemets" » \ antislash 🎓 <!-- id:c89eeecc8f85 -->
+  > ligne 1
+  > 
+  > ligne 3	tabulée
+  - Sous-idée repliée <!-- id:41ee46e5ed30 -->
+
+## ★ Thème 1 : l'Europe <!-- id:34461b8dcd21 -->
+
+Intro du thème
+
+- Chapitre 1 : la Révolution <!-- id:9bb00ef312e6 -->
+  - 1789 <!-- id:f960b9790839 -->
+    > La Bastille
+- Chapitre 2 <!-- id:9cfa2a262b62 -->
+
+### Chapitre 1 : la Révolution <!-- id:9bb00ef312e6 -->
+
+- Causes <!-- id:aaf303b88244 -->
+- Conséquences <!-- id:d1d1aed69864 -->

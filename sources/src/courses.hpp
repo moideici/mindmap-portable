@@ -18,7 +18,7 @@ inline void holders(const document::State& state, long long id, std::vector<long
 inline void emit_map(const fs::path& file, const document::State& state, size_t level, std::string& out, std::vector<fs::path>& chain);
 inline void emit_section(const fs::path& file, const document::State& state, long long id, size_t level, std::string& out, std::vector<fs::path>& chain) {
     auto n = state.map->nodes.at(id);
-    out += std::string(std::min<size_t>(level, 6), '#') + " " + document::marker_info(document::marker_of(state, id)).markdown + document::single_line(n->title) + "\n\n";
+    out += std::string(std::min<size_t>(level, 6), '#') + " " + document::marker_info(document::marker_of(state, id)).markdown + document::single_line(n->title) + document::uid_comment(state, id) + "\n\n";
     if (!n->note.empty()) out += n->note + "\n\n";
     auto child_file = submap::resolve(file, state.submaps.at(id));
     for (const auto& ancestor : chain) if (submap::same(ancestor, child_file)) { out += "⚠ boucle de sous-cartes : " + state.submaps.at(id) + "\n\n"; return; }
@@ -33,7 +33,7 @@ inline void emit_section(const fs::path& file, const document::State& state, lon
 }
 inline void emit_map(const fs::path& file, const document::State& state, size_t level, std::string& out, std::vector<fs::path>& chain) {
     const bool any = !state.map->nodes.at(1)->children.empty();
-    for (auto child : state.map->nodes.at(1)->children) document::markdown_bullets(state, child, 0, out);
+    for (auto child : state.map->nodes.at(1)->children) document::markdown_bullets(state, child, 0, out, true);
     if (any) out += "\n";
     std::vector<long long> sections;
     holders(state, 1, sections);
@@ -43,7 +43,7 @@ inline std::string markdown(const fs::path& file) {
     auto state = submap::load(file);
     auto root = state.map->nodes.at(1);
     std::string out = "<!-- Généré depuis « " + workspace::path_text(file.filename()) + " » par MindMap. Modifiez la carte, pas ce fichier : il est régénéré à chaque export. -->\n\n";
-    out += "# " + std::string(document::marker_info(document::marker_of(state, 1)).markdown) + document::single_line(root->title) + "\n\n";
+    out += "# " + std::string(document::marker_info(document::marker_of(state, 1)).markdown) + document::single_line(root->title) + document::uid_comment(state, 1) + "\n\n";
     if (!root->note.empty()) out += root->note + "\n\n";
     std::vector<fs::path> chain{file};
     emit_map(file, state, 2, out, chain);
@@ -54,12 +54,13 @@ inline std::string markdown(const fs::path& file) {
 // ----- Markdown course -> map hierarchy -----
 // Ideas at the first `split` levels that have sub-ideas become sub-maps (split 0 = a single map).
 inline void build_map(const fs::path& file, const std::string& title, const std::string& note, int marker,
-                      const std::vector<document::OutlineItem>& items, int split, int depth, size_t& maps) {
+                      const std::vector<document::OutlineItem>& items, int split, int depth, size_t& maps, const std::string& uid = "") {
     if (++maps > submap::max_maps) throw std::runtime_error("Trop de sous-cartes (200 au plus) : réduisez --split");
     document::State state;
     state.map->nodes.at(1)->title = title;
     state.map->nodes.at(1)->note = note;
     if (marker) state.markers[1] = marker;
+    if (!uid.empty()) state.uids[1] = uid;
     size_t i = 0;
     while (i < items.size()) {
         size_t j = i + 1;
@@ -69,6 +70,7 @@ inline void build_map(const fs::path& file, const std::string& title, const std:
             auto id = state.map->add(1, top.title);
             state.map->rename(id, top.title, top.note);
             if (top.marker) state.markers[id] = top.marker;
+            if (!top.uid.empty() && !document::uid_used(state, top.uid)) state.uids[id] = top.uid;
             std::vector<document::OutlineItem> below(items.begin() + static_cast<long>(i) + 1, items.begin() + static_cast<long>(j));
             for (auto& item : below) --item.level;
             auto child = workspace::unique_file(submap::folder_of(file) / file.stem(), submap::slug(top.title));
@@ -90,15 +92,16 @@ inline size_t import_course(const fs::path& file, const std::string& text, const
     if (items.empty()) throw std::runtime_error("Aucune idée trouvée dans ce texte");
     std::string title = fallback_title.empty() ? "Cours importé" : document::clip_utf8(fallback_title, 1024), note;
     int marker = 0;
+    std::string uid;
     size_t top_level = 0;
     for (const auto& item : items) top_level += item.level == 0;
     if (top_level == 1 && items[0].level == 0) {
-        title = items[0].title; note = items[0].note; marker = items[0].marker;
+        title = items[0].title; note = items[0].note; marker = items[0].marker; uid = items[0].uid;
         items.erase(items.begin());
         for (auto& item : items) --item.level;
     }
     size_t maps = 0;
-    build_map(file, title, note, marker, items, std::max(0, split), 0, maps);
+    build_map(file, title, note, marker, items, std::max(0, split), 0, maps, uid);
     return maps;
 }
 } // namespace course
@@ -226,11 +229,14 @@ inline std::vector<fs::path> root_maps(const fs::path& folder) {
 }
 
 // ----- Ideas and their former titles: a renamed idea keeps its review history on Nemo -----
-// Nemo finds a notion by subject + title. MindMap remembers, per idea (map file + idea number, both stable across renames), the titles it
-// has had when it published or asked for mastery; nemo-mastery then also asks for the former titles and reports the history it finds.
-struct Idea { fs::path file; long long id = 0; std::string title; std::vector<std::string> former; };
+// Nemo finds a notion by its identifier (uid written in the map, "mm-<uid>" on Nemo) or else by subject + title. MindMap remembers, per idea,
+// the titles it has had when it published or asked for mastery; nemo-mastery then also asks for the former titles and reports the history it finds.
+// An idea is known by its uid (it survives renames and moves between maps) or, in a map saved before identifiers existed, by map file + number.
+struct Idea { fs::path file; long long id = 0; std::string uid, title; std::vector<std::string> former; };
 inline fs::path ideas_file(const fs::path& workspace_root) { return fs::absolute(workspace_root) / ".mindmap-data" / "nemo-ideas.json"; }
 inline std::string idea_key(const fs::path& file, long long id) { return workspace::path_text(fs::absolute(file).lexically_normal()) + "#" + std::to_string(id); }
+inline std::string uid_key(const std::string& uid) { return "uid:" + uid; }
+inline std::string idea_key(const Idea& idea) { return idea.uid.empty() ? idea_key(idea.file, idea.id) : uid_key(idea.uid); }
 inline std::map<std::string, std::vector<std::string>> load_titles(const fs::path& workspace_root) {
     std::map<std::string, std::vector<std::string>> out;
     auto file = ideas_file(workspace_root);
@@ -255,9 +261,11 @@ inline std::vector<Idea> ideas_of(const fs::path& root_map, const std::map<std::
             if (id == 1) continue;
             auto title = document::single_line(state.map->nodes.at(id)->title);
             if (title.empty()) continue;
-            Idea idea{entry.file, id, title, {}};
-            if (auto it = known.find(idea_key(entry.file, id)); it != known.end())
-                for (const auto& t : it->second) if (t != title && idea.former.size() < 5) idea.former.push_back(t);
+            Idea idea{entry.file, id, document::uid_of(state, id), title, {}};
+            for (const auto& key : {idea_key(idea), idea_key(entry.file, id)})  // the file + number key of an older record still counts
+                if (auto it = known.find(key); it != known.end())
+                    for (const auto& t : it->second)
+                        if (t != title && idea.former.size() < 5 && std::find(idea.former.begin(), idea.former.end(), t) == idea.former.end()) idea.former.push_back(t);
             out.push_back(std::move(idea));
         }
     }
@@ -267,7 +275,13 @@ inline std::vector<Idea> ideas_of(const fs::path& root_map, const std::map<std::
 inline void record_titles(const fs::path& workspace_root, const fs::path& map_file) {
     auto known = load_titles(workspace_root);
     for (const auto& idea : ideas_of(map_file)) {
-        auto& titles = known[idea_key(idea.file, idea.id)];
+        auto& titles = known[idea_key(idea)];
+        if (!idea.uid.empty()) {  // moves an older file + number record under the identifier
+            if (auto old = known.find(idea_key(idea.file, idea.id)); old != known.end()) {
+                for (const auto& t : old->second) if (std::find(titles.begin(), titles.end(), t) == titles.end()) titles.push_back(t);
+                known.erase(old);
+            }
+        }
         titles.erase(std::remove(titles.begin(), titles.end(), idea.title), titles.end());
         titles.insert(titles.begin(), idea.title);
         if (titles.size() > 6) titles.resize(6);
@@ -298,13 +312,15 @@ inline std::map<std::string, std::string> load_mastery_cache(const fs::path& wor
     } catch (...) { out.clear(); }
     return out;
 }
-// Replaces the entries of every map of "files" (a hierarchy) by "fresh" and keeps the others.
-inline void save_mastery_cache(const fs::path& workspace_root, const std::vector<fs::path>& files, const std::map<std::string, std::string>& fresh) {
+// Replaces the entries of every map of "files" (a hierarchy) and of the identifiers "uids" by "fresh" and keeps the others.
+inline void save_mastery_cache(const fs::path& workspace_root, const std::vector<fs::path>& files, const std::map<std::string, std::string>& fresh,
+                               const std::vector<std::string>& uids = {}) {
     auto all = load_mastery_cache(workspace_root);
     for (const auto& f : files) {
         const auto prefix = workspace::path_text(fs::absolute(f).lexically_normal()) + "#";
         for (auto it = all.begin(); it != all.end();) it = it->first.rfind(prefix, 0) == 0 ? all.erase(it) : std::next(it);
     }
+    for (const auto& uid : uids) all.erase(uid_key(uid));
     for (const auto& [key, status] : fresh) all[key] = status;
     std::string out = "{\"format\":\"mindmap-nemo-mastery\",\"version\":1,\"ideas\":[";
     bool first = true;

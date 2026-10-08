@@ -262,9 +262,11 @@ public:
         g.DrawString(s.c_str(),static_cast<INT>(s.size()),&font(size,flags&Bold,flags&Symbol),r,&format,&brush);
     }
     // Keeps view preferences (theme, mini-map) when another snapshot or document replaces the map.
-    void adopt(document::State loaded){
+    // An undo snapshot of the same map taken before a save may lack the identifiers that save gave: the ideas keep them.
+    void adopt(document::State loaded,bool same_map=false){
         picture_cache.clear();
         loaded.dark=state.dark;loaded.minimap=state.minimap;
+        if(same_map)for(const auto&[id,uid]:state.uids)if(loaded.map->nodes.count(id)&&!loaded.uids.count(id)&&!document::uid_used(loaded,uid))loaded.uids[id]=uid;
         state=std::move(loaded);
         if(selected_link>=static_cast<int>(state.links.size()))selected_link=-1;
     }
@@ -540,7 +542,9 @@ public:
             }
             if(!mastery_prefix.empty()){
                 // What Nemo knows about this idea (read-only; refreshed from Affichage > Actualiser la maîtrise): ✓ acquired, ↻ to review, … in progress.
-                auto known=mastery_cache.find(mastery_prefix+std::to_string(id));
+                auto uid=document::uid_of(doc,id);
+                auto known=uid.empty()?mastery_cache.end():mastery_cache.find(nemo::uid_key(uid));
+                if(known==mastery_cache.end())known=mastery_cache.find(mastery_prefix+std::to_string(id));
                 if(known!=mastery_cache.end()){
                     const bool done=known->second=="acquis",again=known->second=="a-revoir";
                     RectF dot(r.X-5*z,r.GetBottom()-17*z,22*z,22*z);
@@ -818,6 +822,7 @@ public:
             path=dialog(true,L"Carte mentale (*.mindmap)\0*.mindmap\0\0",L"mindmap",name.c_str());
         }
         if(path.empty())return false;
+        document::ensure_uids(state);
         auto data=document::encode(state);auto expected=path==current_file&&!disk_snapshot.empty()?&disk_snapshot:nullptr;
         store.save_named(path,data,expected,true);current_file=path;disk_snapshot=data;dirty=false;retry_save_at=0;autosave_pending=false;
         store.forget_draft(draft_file);draft_file.clear();
@@ -899,6 +904,7 @@ public:
     }
     void open_path(const fs::path& path){
         auto data=read_file(path);auto loaded=document::decode(data);
+        document::ensure_uids(loaded);  // in memory now (undo keeps them), written by the next save
         adopt(std::move(loaded));current_file=fs::absolute(path).lexically_normal();disk_snapshot=data;draft_file.clear();loaded_document(false);
         status=L"Carte ouverte · "+current_file.wstring();
         try{store.opened(current_file);}catch(const std::exception& e){status+=L" · liste des cartes indisponible : "+wide(e.what());}
@@ -913,6 +919,7 @@ public:
     }
     void checkpoint(){
         if(home||!commit_edit()||!autosave_pending)return;
+        document::ensure_uids(state);
         auto data=document::encode(state);
         if(current_file.empty()){
             if(!dirty){autosave_pending=false;return;}
@@ -1098,7 +1105,7 @@ public:
         Bitmap resized(rw,rh,PixelFormat32bppARGB);Graphics g(&resized);g.SetInterpolationMode(InterpolationModeHighQualityBicubic);g.Clear(Color(0,255,255,255));g.DrawImage(&source,0,0,rw,rh);
         auto media=document::picture_from_png(bitmap_bytes(resized,L"image/png"));auto before=document::encode(state);
         state.pictures[state.selected]=std::move(media);
-        try{document::encode(state);}catch(...){adopt(document::decode(before));throw;}
+        try{document::encode(state);}catch(...){adopt(document::decode(before),true);throw;}
         picture_cache.erase(state.selected);document::layout(state);remember(std::move(before));changed(L"Image ajoutée · intégrée au fichier de la carte");
     }
     std::unique_ptr<Bitmap> map_bitmap(){
@@ -1343,7 +1350,7 @@ public:
         if(id==Undo||id==Redo){
             if(!(id==Undo?history.can_undo():history.can_redo())){status=L"Aucune modification à "+std::wstring(id==Undo?L"annuler":L"rétablir");repaint();return true;}
             auto current=document::encode(state);
-            adopt(document::decode(id==Undo?history.undo(current):history.redo(current)));
+            adopt(document::decode(id==Undo?history.undo(current):history.redo(current)),true);
             refresh_inspector();changed();return true;
         }
         if(id>=LinkRow0&&id<LinkRow0+3){
@@ -1406,7 +1413,7 @@ public:
         else return;
         std::string after;
         try{after=document::encode(state);}
-        catch(...){adopt(document::decode(before));refresh_inspector();refresh_outline();repaint();throw;}
+        catch(...){adopt(document::decode(before),true);refresh_inspector();refresh_outline();repaint();throw;}
         if(after==before){repaint();return;}
         remember(std::move(before));refresh_inspector();
         const bool keep_status=id>=Marker0&&id<Marker0+document::marker_count;
@@ -1548,7 +1555,7 @@ public:
             try{
                 if((GetKeyState(VK_SHIFT)&0x8000)){auto target=hit(point);if(target&&target!=drag_id){state.map->reparent(drag_id,target);document::layout(state);}}
                 if(drag_before!=document::encode(state)){remember(std::move(drag_before));changed();}
-            }catch(const PyThrow& e){adopt(document::decode(drag_before));refresh_inspector();show_error(e.p->py_exc_str());}
+            }catch(const PyThrow& e){adopt(document::decode(drag_before),true);refresh_inspector();show_error(e.p->py_exc_str());}
         }
         if(panning&&moved)autosave_pending=true;
         dragging=false;panning=false;drag_before.clear();ReleaseCapture();repaint();

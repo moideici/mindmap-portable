@@ -115,7 +115,7 @@ inline State import_xmind_xml(const std::string& text){
         if(items.size()>=2000||depth>63)throw std::runtime_error("Carte XMind trop grande");
         std::string note;
         if(auto notes=topic.child("notes"))note=clip_utf8(trim(notes->text),16000);
-        items.push_back({depth,label,note,0});
+        items.push_back({depth,label,note,0,{}});
         if(auto children=topic.child("children"))for(const auto& group:children->children)if(group.name=="topics")for(const auto& child:group.children)if(child.name=="topic")walk(child,depth+1);
     };
     for(const auto& sheet:xml.children)if(sheet.name=="sheet")if(auto root=sheet.child("topic"))walk(*root,0);

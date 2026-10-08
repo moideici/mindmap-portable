@@ -1,0 +1,25 @@
+{
+ "file": "Manquante.mindmap",
+ "root": {
+  "id": 1,
+  "title": "Manquante",
+  "color": "#6274e8",
+  "children": [
+   {
+    "id": 2,
+    "title": "Partie perdue",
+    "note": "Note de l'idée",
+    "color": "#26a69a",
+    "submap": "Manquante/absente.mindmap",
+    "uid": "c00000000002"
+   },
+   {
+    "id": 3,
+    "title": "Reste",
+    "color": "#26a69a",
+    "uid": "c00000000003"
+   }
+  ]
+ },
+ "links": []
+}

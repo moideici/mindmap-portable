@@ -37,7 +37,7 @@ Fermez la carte dans l'application pendant qu'un agent la modifie, et travaillez
 
 1. Publier : `mindmap-cli nemo-export Histoire.mindmap` (le fichier « Histoire (carte mentale).md » apparaît à la prochaine synchronisation) **ou** `mindmap-cli nemo-push Histoire.mindmap` (immédiat ; demande `nemo-remote` et `nemo-login`, une fois).
 2. Dans Nemo : `/nemo-prompt-fiche` (outil `prepare_fiche`) lit ce cours et en fait une fiche : hiérarchie → sections, ★ → emphase, `[!]` → piège, `[?]` et ⚑ → questions de quiz. `generate_flashcards` / `generate_mixed_session` fonctionnent aussi sur le cours à jour.
-3. **Convention d'appariement** : le *recto* d'une carte ou d'une question de quiz doit être le **titre de l'idée**. Nemo retrouve alors la notion par matière + titre (casse, accents et espaces ignorés), et `nemo-mastery` affiche sa maîtrise sur la carte. Renommer une idée la sépare de son historique de révision.
+3. **Convention d'appariement** : donnez à la carte d'exercice l'id `mm-<uid>` de l'idée (`uid` de `show --json`, ou `<!-- id:… -->` dans le cours) : sa maîtrise suit alors l'idée même renommée. À défaut, le *recto* doit être le **titre de l'idée** : Nemo retrouve la notion par matière + titre (casse, accents et espaces ignorés), et un renommage n'est suivi que par les anciens titres que MindMap a retenus.
 
 ## Réseau (facultatif, désactivé par défaut)
 

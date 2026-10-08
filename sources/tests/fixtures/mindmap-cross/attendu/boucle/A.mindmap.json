@@ -1,0 +1,25 @@
+{
+ "file": "boucle/A.mindmap",
+ "root": {
+  "id": 1,
+  "title": "A",
+  "color": "#6274e8",
+  "uid": "a00000000001",
+  "children": [
+   {
+    "id": 2,
+    "title": "Vers B",
+    "color": "#26a69a",
+    "submap": "B.mindmap",
+    "uid": "a00000000002"
+   },
+   {
+    "id": 3,
+    "title": "Idée de A",
+    "color": "#26a69a",
+    "uid": "a00000000003"
+   }
+  ]
+ },
+ "links": []
+}

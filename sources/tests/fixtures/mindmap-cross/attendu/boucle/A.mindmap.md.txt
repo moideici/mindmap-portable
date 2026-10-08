@@ -1,0 +1,14 @@
+<!-- Généré depuis « A.mindmap » par MindMap. Modifiez la carte, pas ce fichier : il est régénéré à chaque export. -->
+
+# A <!-- id:a00000000001 -->
+
+- Vers B <!-- id:a00000000002 -->
+- Idée de A <!-- id:a00000000003 -->
+
+## Vers B <!-- id:a00000000002 -->
+
+- Retour vers A <!-- id:b00000000002 -->
+
+### Retour vers A <!-- id:b00000000002 -->
+
+⚠ boucle de sous-cartes : A.mindmap

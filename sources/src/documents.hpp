@@ -6,6 +6,8 @@
 #include <set>
 #include <cctype>
 #include <charconv>
+#include <random>
+#include <chrono>
 
 namespace document {
 constexpr size_t max_file_bytes = 8 * 1024 * 1024;
@@ -215,7 +217,44 @@ struct State {
     std::map<long long, Picture> pictures;
     // Sub-maps: idea id -> path of another .mindmap, relative to this file's folder ('/' separators, UTF-8).
     std::map<long long, std::string> submaps;
+    // Stable idea identifiers (short random hex), kept across renames and moves: Nemo matches mastery by them before titles.
+    // Optional in the file ("uid" of a node, ignored by older versions): a map without them stays readable and gets them when saved.
+    std::map<long long, std::string> uids;
 };
+constexpr size_t uid_length = 12, max_uid = 64;
+inline bool valid_uid(const std::string& u) {
+    if (u.empty() || u.size() > max_uid) return false;
+    for (unsigned char c : u) if (!std::isalnum(c) && c != '-' && c != '_') return false;
+    return true;
+}
+inline std::string new_uid() {
+    static std::mt19937_64 generator{(static_cast<unsigned long long>(std::random_device{}()) << 32) ^ std::random_device{}()
+                                     ^ static_cast<unsigned long long>(std::chrono::steady_clock::now().time_since_epoch().count())};
+    constexpr char hex[] = "0123456789abcdef";
+    std::string out;
+    auto bits = generator();
+    for (size_t i = 0; i < uid_length; ++i, bits >>= 4) out += hex[bits & 15];
+    return out;
+}
+inline bool uid_used(const State& state, const std::string& u) {
+    for (const auto& [id, value] : state.uids) if (value == u) return true;
+    return false;
+}
+// Gives every idea that has none an identifier (called before writing a map: the first save of an old map adds them).
+inline void ensure_uids(State& state) {
+    std::set<std::string> used;
+    for (const auto& [id, value] : state.uids) used.insert(value);
+    for (const auto& [id, node] : state.map->nodes) {
+        if (state.uids.count(id)) continue;
+        std::string u;
+        do u = new_uid(); while (!used.insert(u).second);
+        state.uids[id] = u;
+    }
+}
+inline std::string uid_of(const State& state, long long id) {
+    auto it = state.uids.find(id);
+    return it == state.uids.end() ? std::string() : it->second;
+}
 constexpr size_t max_submap_path = 1024;
 // Relative, without '..' or drive letters: a sub-map always lives next to or below its parent map.
 inline bool valid_submap_path(const std::string& p) {
@@ -244,6 +283,7 @@ inline void prune(State& state) {
     std::erase_if(state.markers, [&](const auto& m) { return !nodes.count(m.first) || m.second <= 0 || m.second >= marker_count; });
     std::erase_if(state.pictures, [&](const auto& p) { return !nodes.count(p.first); });
     std::erase_if(state.submaps, [&](const auto& p) { return !nodes.count(p.first); });
+    std::erase_if(state.uids, [&](const auto& p) { return !nodes.count(p.first); });
 }
 inline bool add_link(State& state, long long from, long long to, const std::string& label = "") {
     if (from == to) throw std::runtime_error("Une idée ne peut pas être reliée à elle-même");
@@ -273,6 +313,7 @@ inline std::string encode(const State& state) {
         if (int marker = marker_of(state, id)) out << ",\"marker\":" << marker;
         if(auto p=state.pictures.find(id);p!=state.pictures.end())out<<",\"picture\":"<<quote(p->second.data);
         if(auto p=state.submaps.find(id);p!=state.submaps.end())out<<",\"submap\":"<<quote(p->second);
+        if(auto p=state.uids.find(id);p!=state.uids.end())out<<",\"uid\":"<<quote(p->second);
         out << '}';
     }
     out << "],\"links\":[";
@@ -321,6 +362,12 @@ inline State decode(const std::string& input) {
             auto path=submap->text();
             if(!valid_submap_path(path))throw std::runtime_error("Chemin de sous-carte invalide");
             result.submaps[id]=path;
+        }
+        // A copied or hand-edited file may repeat an identifier: the first idea keeps it, the others get a new one when saved.
+        if(auto uid=optional(item,"uid")){
+            auto value=uid->text();
+            if(!valid_uid(value))throw std::runtime_error("Identifiant d'idée invalide");
+            if(!uid_used(result,value))result.uids[id]=value;
         }
         max_id = std::max(max_id, id);
     }

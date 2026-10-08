@@ -41,6 +41,7 @@ for args, expected in [(("anglais", "mouillé"), "nan2mqd"), (("Anglais", "MOUIL
         print(f"ÉCHEC : stable_item_id{args} = {stable_item_id(*args)} au lieu de {expected}")
         sys.exit(1)
 KNOWN_IDS = {stable_item_id("anglais", "mouillé"): "acquis", stable_item_id("hist géo", "Œuvre d’art — « test »"): "a-revoir"}
+KNOWN_UIDS = {}  # identifiants d'idées que le faux Nemo connaît (notions « mm-<uid> »), remplis par le test
 
 
 class Fake(BaseHTTPRequestHandler):
@@ -61,6 +62,11 @@ class Fake(BaseHTTPRequestHandler):
                 payload = json.dumps({"items": [{"title": t, "itemId": "n1", "status": MASTERY.get(t, "inconnu"), **({"box": 3, "mastery": 1} if t in MASTERY else {})} for t in titles]}).encode()
             else:  # comme le vrai serveur : l'id stable calculé sur la matière + le titre reçus
                 payload = json.dumps({"items": [{"title": t.strip(), "itemId": stable_item_id(request["subject"], t.strip()), "status": KNOWN_IDS.get(stable_item_id(request["subject"], t.strip()), "inconnu")} for t in titles]}).encode()
+            if "ideas" in request:  # comme le vrai serveur : la notion « mm-<uid> » d'abord (voir nemo-https/src/masteryLookup.js)
+                reply = json.loads(payload)
+                reply["ideas"] = [{"id": i["id"], "title": i["title"], "itemId": "mm-" + i["id"], "status": KNOWN_UIDS.get(i["id"], "inconnu"),
+                                   **({"box": 4, "mastery": 1} if i["id"] in KNOWN_UIDS else {})} for i in request["ideas"]]
+                payload = json.dumps(reply).encode()
         self.send_response(200)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(payload)))
@@ -188,7 +194,7 @@ with tempfile.TemporaryDirectory(prefix="mindmap hist géo ") as tmp:
     run("nemo-mastery", revo, "--workspace", work, "--cache")
     cache = json.loads((work / ".mindmap-data" / "nemo-mastery.json").read_text(encoding="utf-8"))
     by_key = {i["key"]: i["status"] for i in cache["ideas"]}
-    check(by_key.get(f"{Path(causes['file']).resolve().as_posix()}#{causes['id']}") == "acquis", f"cache des badges : {by_key}")
+    check(by_key.get(f"uid:{causes['uid']}") == "acquis", f"cache des badges (clé = identifiant de l'idée) : {by_key}")
     check(sorted(by_key.values()) == ["a-revoir", "acquis"], f"les idées inconnues n'ont pas de badge : {by_key}")
     run("nemo-config", "--workspace", work, "--json")
 
@@ -206,6 +212,18 @@ with tempfile.TemporaryDirectory(prefix="mindmap hist géo ") as tmp:
     check(got.get("Œuvre d’art — « test »") == "a-revoir" and got.get("mouillé") == "inconnu", f"matière de nemo-remote : {got}")
     _, err = run("nemo-mastery", vocab, "--workspace", work, expect=1, token="mauvais")
     check("profil élève" in err, f"refus du jeton pour la maîtrise : {err}")
+
+    # --- identifiant stable : une notion Nemo « mm-<uid> » suit l'idée même renommée SANS historique local des titres
+    seen.clear()
+    pillow = next(i for i in json.loads(run("nemo-mastery", vocab, "--workspace", work, "--subject", "anglais", "--json")[0])["ideas"] if i["title"] == "un oreiller")
+    sent = json.loads([s for s in seen if s[1] == "/api/mastery/lookup"][-1][3])
+    check(len(pillow.get("uid", "")) == 12 and {"id": pillow["uid"], "title": "un oreiller"} in sent.get("ideas", []), f"idées envoyées avec leur identifiant : {sent}")
+    KNOWN_UIDS[pillow["uid"]] = "acquis"
+    run("set", vocab, "--id", pillow["id"], "--title", "a pillow")
+    (work / ".mindmap-data" / "nemo-ideas.json").unlink()                     # aucun ancien titre retenu : seul l'identifiant relie
+    got = {i["title"]: i for i in json.loads(run("nemo-mastery", vocab, "--workspace", work, "--subject", "anglais", "--json")[0])["ideas"]}
+    check(got["a pillow"]["status"] == "acquis" and got["a pillow"]["uid"] == pillow["uid"] and "renamedFrom" not in got["a pillow"], f"maîtrise par identifiant : {got.get('a pillow')}")
+    check(got["mouillé"]["status"] == "acquis", "sans notion « mm- », le titre répond toujours")
 
 server.shutdown()
 if failures:

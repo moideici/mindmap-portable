@@ -1,0 +1,24 @@
+{
+ "file": "Histoire/Thème 1 _ l'Europe/Chapitre 1 _ la Révolution.mindmap",
+ "root": {
+  "id": 1,
+  "title": "Chapitre 1 : la Révolution",
+  "color": "#6274e8",
+  "uid": "92f067899ccc",
+  "children": [
+   {
+    "id": 2,
+    "title": "Causes",
+    "color": "#6274e8",
+    "uid": "aaf303b88244"
+   },
+   {
+    "id": 3,
+    "title": "Conséquences",
+    "color": "#26a69a",
+    "uid": "d1d1aed69864"
+   }
+  ]
+ },
+ "links": []
+}

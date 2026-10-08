@@ -14,7 +14,7 @@ inline document::State load(const fs::path& file) {
     if (!fs::is_regular_file(file)) throw std::runtime_error("Carte introuvable : " + workspace::path_text(file));
     return document::decode(workspace::read(file));
 }
-inline void store(const fs::path& file, const document::State& state) { workspace::write(file, document::encode(state)); }
+inline void store(const fs::path& file, document::State& state) { document::ensure_uids(state); workspace::write(file, document::encode(state)); }
 inline bool same(const fs::path& a, const fs::path& b) {
     std::error_code error;
     if (fs::exists(a, error) && fs::exists(b, error)) return fs::equivalent(a, b, error);

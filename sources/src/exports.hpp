@@ -38,14 +38,19 @@ inline std::string single_line(std::string text) {
     std::replace(text.begin(), text.end(), '\n', ' '); std::replace(text.begin(), text.end(), '\r', ' ');
     return text;
 }
-inline void markdown_bullets(const State& state, long long id, size_t depth, std::string& out) {
+// " <!-- id:… -->" after a title in a course for Nemo (nothing when the idea has no identifier yet).
+inline std::string uid_comment(const State& state, long long id) {
+    auto uid = uid_of(state, id);
+    return uid.empty() ? "" : " <!-- id:" + uid + " -->";
+}
+inline void markdown_bullets(const State& state, long long id, size_t depth, std::string& out, bool ids = false) {
     auto n = state.map->nodes.at(id);
-    out += std::string(depth * 2, ' ') + "- " + marker_info(marker_of(state, id)).markdown + single_line(n->title) + "\n";
+    out += std::string(depth * 2, ' ') + "- " + marker_info(marker_of(state, id)).markdown + single_line(n->title) + (ids ? uid_comment(state, id) : "") + "\n";
     if (!n->note.empty()) {
         std::istringstream lines(n->note); std::string line;
         while (std::getline(lines, line)) out += std::string(depth * 2 + 2, ' ') + "> " + line + "\n";
     }
-    for (auto child : n->children) markdown_bullets(state, child, depth + 1, out);
+    for (auto child : n->children) markdown_bullets(state, child, depth + 1, out, ids);
 }
 inline std::string markdown(const State& state) {
     auto root = state.map->nodes.at(1);
@@ -69,12 +74,23 @@ inline std::string branch_markdown(const State& state, long long id) {
     return out;
 }
 
-struct OutlineItem { int level = 0; std::string title, note; int marker = 0; };
+struct OutlineItem { int level = 0; std::string title, note; int marker = 0; std::string uid; };
 inline std::string trim(std::string_view s) {
     size_t a = 0, b = s.size();
     while (a < b && (s[a] == ' ' || s[a] == '\t' || s[a] == '\r')) ++a;
     while (b > a && (s[b-1] == ' ' || s[b-1] == '\t' || s[b-1] == '\r')) --b;
     return std::string(s.substr(a, b - a));
+}
+// "Titre <!-- id:3f9a0c12d4e5 -->" (course exported for Nemo): removes the comment from the title and returns the identifier.
+inline std::string take_uid_comment(std::string& title) {
+    constexpr std::string_view open = "<!-- id:", close = " -->";
+    if (title.size() < open.size() + close.size() || title.compare(title.size() - close.size(), close.size(), close) != 0) return "";
+    auto at = title.rfind(open);
+    if (at == std::string::npos) return "";
+    auto uid = title.substr(at + open.size(), title.size() - close.size() - at - open.size());
+    if (!valid_uid(uid)) return "";
+    title = trim(std::string_view(title).substr(0, at));
+    return uid;
 }
 inline std::string clip_utf8(std::string s, size_t bytes) {
     if (s.size() <= bytes) return s;
@@ -110,6 +126,7 @@ inline std::vector<OutlineItem> parse_outline(const std::string& input) {
         auto content = trim(line);
         if (content.empty()) continue;
         if (content == "## Liens transversaux") break;
+        if (content.compare(0, 4, "<!--") == 0 && content.size() >= 7 && content.compare(content.size() - 3, 3, "-->") == 0) continue;
         if (content[0] == '>') {
             if (items.empty()) continue;
             auto quoted = content.size() > 1 && content[1] == ' ' ? content.substr(2) : content.substr(1);
@@ -138,6 +155,7 @@ inline std::vector<OutlineItem> parse_outline(const std::string& input) {
             item.level = base + static_cast<int>(indents.size()) - 1;
             item.title = trim(std::string_view(content).substr(skip));
         }
+        item.uid = take_uid_comment(item.title);
         for (int marker = 1; marker < marker_count; ++marker) {
             std::string prefix = marker_info(marker).markdown;
             if (item.title.compare(0, prefix.size(), prefix) == 0) { item.marker = marker; item.title.erase(0, prefix.size()); break; }
@@ -172,6 +190,7 @@ inline std::vector<long long> apply_outline(State& state, long long parent, cons
         long long id = state.map->add(item.level ? stack.back() : parent, item.title);
         state.map->rename(id, item.title, item.note);
         if (item.marker) state.markers[id] = item.marker;
+        if (!item.uid.empty() && !uid_used(state, item.uid)) state.uids[id] = item.uid;
         stack.push_back(id);
         created.push_back(id);
     }
@@ -187,6 +206,7 @@ inline State from_outline(std::vector<OutlineItem> items, const std::string& fal
     if (top_level == 1 && items[0].level == 0) {
         root->title = items[0].title; root->note = items[0].note;
         if (items[0].marker) result.markers[1] = items[0].marker;
+        if (!items[0].uid.empty()) result.uids[1] = items[0].uid;
         items.erase(items.begin());
         for (auto& item : items) --item.level;
     } else root->title = fallback_title.empty() ? "Plan importé" : clip_utf8(fallback_title, 1024);

@@ -1,0 +1,51 @@
+{
+ "file": "Histoire.mindmap",
+ "root": {
+  "id": 1,
+  "title": "Histoire",
+  "color": "#6274e8",
+  "uid": "aeaff3aed214",
+  "children": [
+   {
+    "id": 2,
+    "title": "Thème 1 : l'Europe",
+    "note": "Intro du thème",
+    "marker": "Important",
+    "color": "#6274e8",
+    "submap": "Histoire/Thème 1 _ l'Europe.mindmap",
+    "uid": "34461b8dcd21"
+   },
+   {
+    "id": 3,
+    "title": "Avant-propos",
+    "marker": "À revoir",
+    "color": "#26a69a",
+    "uid": "7afa9c979b82"
+   },
+   {
+    "id": 4,
+    "title": "Citation « \"guillemets\" » \\ antislash 🎓",
+    "note": "ligne 1\n\nligne 3\ttabulée",
+    "marker": "Repère clé (date, lieu)",
+    "color": "#2e9e5b",
+    "collapsed": true,
+    "uid": "c89eeecc8f85",
+    "children": [
+     {
+      "id": 5,
+      "title": "Sous-idée repliée",
+      "color": "#2e9e5b",
+      "uid": "41ee46e5ed30"
+     }
+    ]
+   }
+  ]
+ },
+ "links": [
+  {
+   "from": 3,
+   "to": 4,
+   "label": "voir aussi"
+  }
+ ]
+}

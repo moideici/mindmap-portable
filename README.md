@@ -38,7 +38,7 @@ Les captures ci-dessous montrent l'interface de la version 2 ; l'accueil et les 
 | 8 | **Mini-carte** | Vue d'ensemble cliquable en bas à droite (M) |
 | 9 | **Thème sombre** | Interface, carte et barre de titre Windows |
 
-Les cartes des versions 1 et 2 restent lisibles. Les nouveaux fichiers utilisent le format `version 3`, qui ajoute les images intégrées ; une carte qui contient des sous-cartes est écrite en `version 4`.
+Les cartes des versions 1 et 2 restent lisibles. Les nouveaux fichiers utilisent le format `version 3`, qui ajoute les images intégrées ; une carte qui contient des sous-cartes est écrite en `version 4`. Chaque idée porte en plus un identifiant stable facultatif (`uid`), ajouté au premier enregistrement et ignoré par les versions précédentes.
 
 ![Thème sombre, disposition radiale](docs/capture-sombre-radiale.png)
 

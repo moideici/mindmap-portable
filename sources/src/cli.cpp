@@ -118,6 +118,7 @@ std::string json_node(const document::State& s, long long id) {
     if (n->collapsed) out += ",\"collapsed\":true";
     if (s.pictures.count(id)) out += ",\"picture\":true";
     if (auto it = s.submaps.find(id); it != s.submaps.end()) out += ",\"submap\":" + quote(it->second);
+    if (auto it = s.uids.find(id); it != s.uids.end()) out += ",\"uid\":" + quote(it->second);
     if (!n->children.empty()) {
         out += ",\"children\":[";
         bool first = true;
@@ -359,15 +360,21 @@ void cmd_nemo_mastery(const Args& a) {
     auto token = nemo::checked_token();
     auto ideas = nemo::ideas_of(map_path(a), nemo::load_titles(root));
     std::vector<std::string> titles;
+    std::vector<std::pair<std::string, std::string>> identified;
     std::set<std::string> seen;
     for (const auto& idea : ideas) {
+        if (!idea.uid.empty()) identified.push_back({idea.uid, idea.title});
         if (seen.insert(idea.title).second) titles.push_back(idea.title);
         for (const auto& t : idea.former) if (seen.insert(t).second) titles.push_back(t);
     }
-    auto known = nemo::lookup_mastery(remote, token, titles);
+    auto reply = nemo::lookup_mastery(remote, token, titles, identified);
+    const auto& known = reply.by_title;
     try { nemo::record_titles(root, map_path(a)); } catch (...) {}  // keeps the former titles of the ideas (not the map itself)
-    // The current title wins; an idea that was renamed keeps the history of its former title (the first one Nemo knows).
+    // The identifier wins (Nemo notions built from this very idea), then the current title; an idea that was renamed keeps the history
+    // of its former title (the first one Nemo knows).
     auto find = [&](const nemo::Idea& idea, std::string& via) {
+        if (!idea.uid.empty())
+            if (auto it = reply.by_uid.find(idea.uid); it != reply.by_uid.end() && it->second.status != "inconnu") return it->second;
         auto it = known.find(idea.title);
         if (it != known.end() && it->second.status != "inconnu") return it->second;
         for (const auto& t : idea.former) {
@@ -381,13 +388,15 @@ void cmd_nemo_mastery(const Args& a) {
     if (a.has("cache")) {
         std::map<std::string, std::string> fresh;
         std::vector<fs::path> files;
+        std::vector<std::string> uids;
         for (const auto& entry : submap::hierarchy(map_path(a))) files.push_back(entry.file);
         for (const auto& idea : ideas) {
             std::string unused;
             auto m = find(idea, unused);
-            if (m.status != "inconnu") fresh[nemo::idea_key(idea.file, idea.id)] = m.status;
+            if (!idea.uid.empty()) uids.push_back(idea.uid);
+            if (m.status != "inconnu") fresh[nemo::idea_key(idea)] = m.status;
         }
-        nemo::save_mastery_cache(root, files, fresh);
+        nemo::save_mastery_cache(root, files, fresh, uids);
     }
     auto status_of = [&](const nemo::Idea& idea) { return resolved.at({workspace::path_text(idea.file), idea.id}).first; };
     auto via_of = [&](const nemo::Idea& idea) { return resolved.at({workspace::path_text(idea.file), idea.id}).second; };
@@ -396,7 +405,7 @@ void cmd_nemo_mastery(const Args& a) {
         std::string out = "{\"ok\":true,\"ideas\":[";
         for (size_t i = 0; i < ideas.size(); ++i) {
             auto m = status_of(ideas[i]);
-            out += (i ? "," : "") + std::string("{\"file\":") + quote(workspace::path_text(ideas[i].file)) + ",\"id\":" + std::to_string(ideas[i].id) + ",\"title\":" + quote(ideas[i].title)
+            out += (i ? "," : "") + std::string("{\"file\":") + quote(workspace::path_text(ideas[i].file)) + ",\"id\":" + std::to_string(ideas[i].id) + (ideas[i].uid.empty() ? "" : ",\"uid\":" + quote(ideas[i].uid)) + ",\"title\":" + quote(ideas[i].title)
                 + ",\"status\":" + quote(m.status) + (via_of(ideas[i]).empty() ? "" : ",\"renamedFrom\":" + quote(via_of(ideas[i]))) + ",\"box\":" + std::to_string(m.box) + (m.next.empty() ? "" : ",\"nextReviewAt\":" + quote(m.next)) + "}";
         }
         print(out + "]}\n");

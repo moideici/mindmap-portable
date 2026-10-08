@@ -1,0 +1,9 @@
+<!-- Généré depuis « Ancienne.mindmap » par MindMap. Modifiez la carte, pas ce fichier : il est régénéré à chaque export. -->
+
+# Ancienne
+
+- ✓ Première idée
+  > ligne 1
+  > ligne 2
+  - Enfant
+- Deuxième
