@@ -47,3 +47,4 @@ jobs:
             sources/build/smoke/test-carte.pdf
             sources/build/smoke/smoke-test-report.json
             sources/build/Testing/Temporary/LastTest.log
+          retention-days: 3
