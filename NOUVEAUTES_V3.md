@@ -1,9 +1,9 @@
 # MindMap v3 — accueil et cartes portables
 
-Branche GitHub : `feature/portable-workspace`, [pull request #1](https://github.com/moidefr/mindmap-portable/pull/1).
+Branche GitHub : `feature/portable-workspace`, [pull request #1](https://github.com/moideici/mindmap-portable/pull/1).
 La version 3 est compilée et testée sous Windows dans GitHub Actions.
 L'exécutable est disponible dans l'artefact `MindMap-Windows` de la
-[compilation validée](https://github.com/moidefr/mindmap-portable/actions/runs/37618950562).
+[compilation validée](https://github.com/moideici/mindmap-portable/actions/runs/37618950562).
 Les exécutables de la release v2 restent ceux de la version précédente.
 
 ## Le nouveau parcours

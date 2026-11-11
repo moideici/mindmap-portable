@@ -1,6 +1,6 @@
 # Optimisations du 7 octobre 2026
 
-Le dépôt `moidefr/mindmap-portable` a été récupéré par le connecteur GitHub,
+Le dépôt `moideici/mindmap-portable` a été récupéré par le connecteur GitHub,
 puis reconstitué comme un checkout Git superficiel du commit
 `98b56d2732d25a2def9cfb2df65ef1ac3f735ea8`. Les empreintes de tous les fichiers,
 de l'arbre Git et du commit ont été vérifiées. Branche locale :
