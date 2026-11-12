@@ -11,7 +11,7 @@ La livraison est une application graphique Windows x64 de carte mentale, exécut
 Emplacement demandé :
 
 ```text
-C:\Users\gabor\OneDrive\cours\hist géo\outil\mindmap
+%USERPROFILE%\OneDrive\cours\hist géo\outil\mindmap
 ```
 
 Le dossier comprend un exécutable prêt à lancer, une carte d'exemple, un guide, ce rapport et un sous-dossier de sources. Pour une copie d'utilisation sur clé USB, seul l'exécutable est nécessaire au premier lancement. Le fichier `session.mindmap` est ensuite créé dans le même dossier.
@@ -523,24 +523,24 @@ Cette construction utilise le C++ généré livré, sans relancer py2x.
 Pour régénérer depuis Python avec le convertisseur du workspace :
 
 ```powershell
-python tools/generate.py "C:\Users\gabor\code\ia\transpiler"
+python tools/generate.py "%USERPROFILE%\code\ia\transpiler"
 ```
 
 Pour les vérifications complémentaires :
 
 ```powershell
-python tests/differential.py g++ "C:\Users\gabor\code\ia\transpiler"
-python tests/converter_probes.py "C:\Users\gabor\code\ia\transpiler"
+python tests/differential.py g++ "%USERPROFILE%\code\ia\transpiler"
+python tests/converter_probes.py "%USERPROFILE%\code\ia\transpiler"
 python tests/portable_check.py
 ```
 
 Si Python n'est pas dans PATH, remplacer `python` par son chemin. Le runtime Python utilisé pendant ce travail était :
 
 ```text
-C:\Users\gabor\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe
+%USERPROFILE%\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe
 ```
 
-Les fichiers du convertisseur se trouvent dans `C:\Users\gabor\code\ia\transpiler\py2x`. Le projet de travail est `C:\Users\gabor\code\ia\projects\mindmap_portable`.
+Les fichiers du convertisseur se trouvent dans `%USERPROFILE%\code\ia\transpiler\py2x`. Le projet de travail est `%USERPROFILE%\code\ia\projects\mindmap_portable`.
 
 Le script `tools/build.ps1` construit le projet ; il ne force pas de régénération sans chemin de convertisseur explicite. Ne pas exécuter un mode test sur la seule copie de documents utilisateur : utiliser un dossier de test distinct.
 

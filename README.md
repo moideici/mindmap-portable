@@ -157,3 +157,7 @@ Le dernier script compare le découpage UTF-8 avec le commit de référence v2
 (`98b56d2`, qui doit être présent dans le dépôt Git), puis mesure les notes
 courtes et longues. L'interface et l'historique compressé restent à vérifier
 sous Windows avec MinGW et `--smoke-test`.
+
+## Licence
+
+Code publié sous [licence MIT](LICENSE). Historique des versions : [CHANGELOG.md](CHANGELOG.md).
